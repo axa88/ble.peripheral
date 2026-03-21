@@ -1,0 +1,344 @@
+// processMenu.cpp
+// #include <Arduino.h>
+#include "processMenu.h"
+#include "bluetoothManager.h"
+#include "configMenuHelp.h"
+#include <Arduino.h>    // Serial, millis(), etc.
+#include <optional>     // std::optional
+#include <algorithm>    // std::find
+#include <atomic>       // std::atomic
+#include <cctype>       // toupper
+#include <cstdint>      // uint16_t, uint32_t
+#include <random>
+
+namespace
+{
+	static std::optional<uint16_t> selectedHandle;
+
+	void listConnection()
+	{
+		auto connections = BluetoothManager::Instance().Server()->getPeerDevices();
+		if (connections.empty())
+		{
+			Serial.println("No Connections");
+			return;
+		}
+
+		Serial.println("Connected Peers:");
+		for (size_t i = 0; i < connections.size(); ++i)
+		{
+			uint16_t handle = connections[i];
+			NimBLEConnInfo connInfo = BluetoothManager::Instance().Server()->getPeerInfoByHandle(handle);
+			const char* marker = (selectedHandle.has_value() && selectedHandle.value() == handle) ? "-->" : "   ";
+			Serial.printf("%s[%zu] handle:%u address:%s\n", marker, i, static_cast<unsigned>(handle), ConfigMenuHelp::formatAddress(connInfo.getAddress()));
+		}
+	}
+
+	void reportPeerState(const NimBLEConnInfo& connInfo)
+	{
+		Serial.printf("%s\n", connInfo.toString());
+		listConnection();
+	}
+
+	void printConfig()
+	{
+		Serial.println();
+		Serial.println("=== Current Config >>>");
+		// Serial.printf("Device Address: %s\n", ConfigMenuHelp::formatAddress(NimBLEDevice::getAddress()));
+		Serial.printf("Device Address: %s\n", NimBLEDevice::toString().c_str());
+
+		Serial.println("--- Security ---");
+		Serial.printf("capabilities: %s\n", ConfigMenuHelp::capIoToString(BluetoothManager::Instance().Capabilities()));
+		Serial.printf("authentication: %s\n", ConfigMenuHelp::authToString(BluetoothManager::Instance().Authentication()));
+		Serial.printf("encryption: %s\n", ConfigMenuHelp::encToString(BluetoothManager::Instance().Encryption()));
+		Serial.println("--- -------- ---");
+		Serial.println("--- Connections ---");
+		if (!BluetoothManager::Instance().Server())
+			Serial.println("Server Uninitialized");
+		else
+			listConnection();
+		Serial.println("--- ----------- ---");
+		Serial.println("<<< Current Config ===");
+	}
+
+	std::optional<char> readCommandChar() // Skip leading whitespace, CR/LF, read a single char
+	{
+		while (Serial.available() > 0)
+		{
+			int p = Serial.peek();
+			if (p < 0)
+				return std::nullopt;
+
+			char pc = static_cast<char>(p);
+			if (pc == ' ' || pc == '\r' || pc == '\n')
+			{
+				Serial.read();
+				if (pc == '\r' && Serial.available() > 0 && Serial.peek() == '\n')
+					Serial.read();
+				continue;
+			}
+			break;
+		}
+
+		if (Serial.available() == 0)
+			return std::nullopt;
+
+		int r = Serial.read();
+		if (r < 0)
+			return std::nullopt;
+
+		char cmd = static_cast<char>(toupper(static_cast<unsigned char>(r)));
+		return cmd;
+	}
+} // namespace
+
+namespace ProcessMenu
+{
+	std::atomic<ConsoleMode> consoleMode{ ConsoleMode::Config };
+
+	void printConfigMenu()
+	{
+		Serial.println();
+		Serial.println("Set Pairing:");
+		Serial.println("- A --> Cycle I/O Capabilities:");
+		Serial.println();
+		Serial.println("Set Authorization:");
+		Serial.println("- B --> Toggle Bond");
+		Serial.println("- C --> Toggle MitM");
+		Serial.println("- D --> Toggle Secure Connections");
+		Serial.println("- E --> Toggle Key Press");
+		Serial.println();
+		Serial.println("Set Encryption:");
+		Serial.println("- F --> Toggle Long Term Key, used to encrypt the BLE link after pairing");
+		Serial.println("- G --> Toggle Identity Resolving Key, used for privacy and address resolution");
+		Serial.println("- H --> Toggle Connection Signature Resolving Key, used for data signing (authenticated but unencrypted operations)");
+		Serial.println("- I --> Toggle BR/EDR Link Key, used for authentication and encryption in BR/EDR connections and for BLE/BR-EDR coexistence");
+		Serial.println();
+		Serial.println("Set State:");
+		Serial.println("- J --> Disconnect Selected");
+		Serial.println();
+		Serial.println("Set Advertising:");
+		Serial.println("- K --> Toggle Advert Restart on Disconnect");
+		Serial.println("- L --> Toggle Advertising");
+		Serial.println();
+		Serial.println("Peer:");
+		Serial.println("- M --> Get Mtu");
+		Serial.println("- N --> Set Phy");
+		Serial.println("- O --> Set Connection Parameters");
+		Serial.println();
+		Serial.println("- Y --> Print Config");
+		Serial.println("- Z --> Print Menu");
+		Serial.println();
+		Serial.println("- 0-9 --> Select Connection");
+		Serial.println();
+	}
+
+	void handleConfigInput()
+	{
+		ConsoleMode mode = consoleMode;
+		if (mode != ConsoleMode::Config)
+			return;
+
+		auto c = readCommandChar();
+		if (!c)
+			return;
+
+		auto& mgr = BluetoothManager::Instance();
+		switch (*c)
+		{
+			case 'A':
+				Serial.println(ConfigMenuHelp::capIoToString(mgr.Capabilities(ConfigMenuHelp::capIoNext(mgr.Capabilities()))));
+				printConfig();
+				break;
+
+			case 'B':
+				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleBond(mgr.Authentication())));
+				printConfig();
+				break;
+			case 'C':
+				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleMitm(mgr.Authentication())));
+				printConfig();
+				break;
+			case 'D':
+				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleSC(mgr.Authentication())));
+				printConfig();
+				break;
+			case 'E':
+				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleKP(mgr.Authentication())));
+				printConfig();
+				break;
+
+			case 'F':
+				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleLTK(mgr.Encryption())));
+				printConfig();
+				break;
+			case 'G':
+				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleIRK(mgr.Encryption())));
+				printConfig();
+				break;
+			case 'H':
+				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleCSRK(mgr.Encryption())));
+				printConfig();
+				break;
+			case 'I':
+				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleLK(mgr.Encryption())));
+				printConfig();
+				break;
+
+			case 'J':
+			{
+				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
+
+				BluetoothManager::Instance().Server()->disconnect(selectedHandle.value());
+				break;
+			}
+
+			case 'K':
+			{
+				Serial.printf("restart advert on disconnect:%s\n", BluetoothManager::Instance().AdvertisingRestartOnDisconnect(!BluetoothManager::Instance().AdvertisingRestartOnDisconnect()) ? "y" : "n");
+				break;
+			}
+			case 'L':
+			{
+				Serial.printf("Advert is:%s\n", BluetoothManager::Instance().AdvertisingState((0), !BluetoothManager::Instance().AdvertisingState(0)) ? "on" : "off");
+				break;
+			}
+
+			case 'M':
+			{
+				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
+
+				Serial.printf("Peer Mtu is:%u\n", BluetoothManager::Instance().GetPeerMtu(selectedHandle.value()));
+				break;
+			}
+
+			case 'N':
+			{
+				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
+
+				if (auto opt = BluetoothManager::Instance().Phy(selectedHandle.value(), BluetoothManager::PhyUpdate{ .txPhysMask = BLE_GAP_LE_PHY_1M_MASK, .rxPhysMask = BLE_GAP_LE_PHY_2M_MASK, .phyOptions = BLE_GAP_LE_PHY_CODED_ANY }))
+				{
+					const auto& [tx, rx] = *opt;
+					Serial.printf("After request tx=%u rx=%u\n", static_cast<unsigned>(tx), static_cast<unsigned>(rx));
+				}
+				else
+					Serial.println("Phy update/read failed");
+
+				break;
+			}
+
+			case 'O':
+			{
+				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
+
+				using namespace std::chrono_literals;
+				BluetoothManager::Instance().UpdateConnectionParams(selectedHandle.value(), 30ms, 50ms, 0, 4s);
+				printConfig();
+				break;
+			}
+
+			case 'P':
+			{
+				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
+
+				uint16_t rando = 0x001B + (esp_random() % (0x00FB - 0x001B + 1)); // 0x001B (27) to 0x00FB (251)
+				BluetoothManager::Instance().RequestDataLength(selectedHandle.value(), rando);
+				printConfig();
+				break;
+			}
+
+			case 'Y': printConfig(); break;
+
+			case 'Z': printConfigMenu(); break;
+
+			case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+			{
+				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+
+				auto connHandles = BluetoothManager::Instance().Server()->getPeerDevices();
+				if (connHandles.empty()) { Serial.println("No Connections"); break; }
+
+				size_t selection = *c - '0';
+				if (selection >= connHandles.size())
+				{
+					Serial.println("Invalid selection\n");
+
+					if (selectedHandle.has_value() && std::find(connHandles.begin(), connHandles.end(), selectedHandle.value()) == connHandles.end())
+					{
+						Serial.println("Previously selected connection no longer valid; clearing selection");
+						selectedHandle.reset();
+					}
+
+					break;
+				}
+
+				selectedHandle = connHandles[selection];
+				uint16_t handle = selectedHandle.value();
+				Serial.printf("Selected item %zu (handle %u)\n", selection, static_cast<unsigned>(handle));
+				Serial.printf("%s\n", BluetoothManager::Instance().Server()->getPeerInfoByHandle(handle).toString());
+
+				break;
+			}
+
+			default: break;
+		}
+
+		if (Serial.available() > 0 && Serial.peek() == '\r')
+			Serial.read();
+		if (Serial.available() > 0 && Serial.peek() == '\n')
+			Serial.read();
+
+		Serial.println();
+	}
+
+	void handleConfigInputSub()
+	{
+		ConsoleMode mode = consoleMode;
+		if (mode != ConsoleMode::ConfigSub)
+			return;
+
+		auto c = readCommandChar();
+		if (!c)
+			return;
+
+		switch (*c)
+		{
+			case 'D': Serial.println("- D --> Disconnect");
+
+			case 'X':
+				consoleMode = ConsoleMode::Config;
+				printConfig();
+				break;
+			default: break;
+		}
+	}
+
+	void setupProcessMenu()
+	{
+		auto& mgr = BluetoothManager::Instance();
+		mgr.SubscribeToEvent(BluetoothManager::Event::Connect, reportPeerState);
+		mgr.SubscribeToEvent
+		(
+			BluetoothManager::Event::Disconnect, [](const NimBLEConnInfo& connInfo)
+			{
+				reportPeerState(connInfo);
+				if (selectedHandle == connInfo.getConnHandle()) // reset the selected connection on disconnect
+					selectedHandle.reset();
+			}
+		);
+		mgr.SubscribeToEvent
+		(
+			BluetoothManager::Event::AuthComplete, [](const NimBLEConnInfo& connInfo)
+			{
+				ProcessMenu::consoleMode = ConsoleMode::Config;
+				reportPeerState(connInfo);
+			}
+		);
+	}
+
+} // ProcessMenu

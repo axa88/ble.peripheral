@@ -1,0 +1,18 @@
+{
+	"multiCommand.commands": [
+		{
+			"command": "multiCommand.openSerialMonitorInNewWindow",
+			"sequence": [
+				"workbench.action.newEmptyEditorWindow",
+				"platformio-ide.serialMonitor"
+			]
+		},
+		{
+			"command": "multiCommand.openSearchInNewWindow",
+			"sequence": [
+				"workbench.action.newEmptyEditorWindow",
+				"search.action.openNewEditor"
+			]
+		}
+	]
+}
