@@ -17,7 +17,8 @@ namespace
 
 	void listConnection()
 	{
-		auto connections = BluetoothManager::Instance().Server()->getPeerDevices();
+		auto server = BluetoothManager::Instance().Server();
+		auto connections = server->getPeerDevices();
 		if (connections.empty())
 		{
 			Serial.println("No Connections");
@@ -28,15 +29,15 @@ namespace
 		for (size_t i = 0; i < connections.size(); ++i)
 		{
 			uint16_t handle = connections[i];
-			NimBLEConnInfo connInfo = BluetoothManager::Instance().Server()->getPeerInfoByHandle(handle);
+			NimBLEConnInfo connInfo = server->getPeerInfoByHandle(handle);
 			const char* marker = (selectedHandle.has_value() && selectedHandle.value() == handle) ? "-->" : "   ";
-			Serial.printf("%s[%zu] handle:%u address:%s\n", marker, i, static_cast<unsigned>(handle), ConfigMenuHelp::formatAddress(connInfo.getAddress()));
+			Serial.printf("%s[%zu] handle:%u address:%s\n", marker, i, static_cast<unsigned>(handle), connInfo.getAddress().toString().c_str());
 		}
 	}
 
 	void reportPeerState(const NimBLEConnInfo& connInfo)
 	{
-		Serial.printf("%s\n", connInfo.toString());
+		Serial.println(connInfo.toString().c_str());
 		listConnection();
 	}
 
@@ -44,20 +45,25 @@ namespace
 	{
 		Serial.println();
 		Serial.println("=== Current Config >>>");
-		// Serial.printf("Device Address: %s\n", ConfigMenuHelp::formatAddress(NimBLEDevice::getAddress()));
+		// Serial.printf("Device Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
 		Serial.printf("Device Address: %s\n", NimBLEDevice::toString().c_str());
 
-		Serial.println("--- Security ---");
-		Serial.printf("capabilities: %s\n", ConfigMenuHelp::capIoToString(BluetoothManager::Instance().Capabilities()));
-		Serial.printf("authentication: %s\n", ConfigMenuHelp::authToString(BluetoothManager::Instance().Authentication()));
-		Serial.printf("encryption: %s\n", ConfigMenuHelp::encToString(BluetoothManager::Instance().Encryption()));
-		Serial.println("--- -------- ---");
-		Serial.println("--- Connections ---");
-		if (!BluetoothManager::Instance().Server())
+		auto& btMgr = BluetoothManager::Instance();
+
+		Serial.println("<--- Security ---");
+		std::string_view caps = ConfigMenuHelp::capIoToString(btMgr.Capabilities());
+		Serial.printf("capabilities: %.*s\n", static_cast<int>(caps.size()), caps.data());
+		std::string_view auth = ConfigMenuHelp::authToString(btMgr.Authentication());
+		Serial.printf("authentication: %.*s\n", static_cast<int>(auth.size()), auth.data());
+		std::string_view enc = ConfigMenuHelp::encToString(btMgr.Encryption());
+		Serial.printf("encryption: %.*s\n", static_cast<int>(enc.size()), enc.data());
+		Serial.println("--- -------- --->");
+		Serial.println("<--- Connections ---");
+		if (!btMgr.Server())
 			Serial.println("Server Uninitialized");
 		else
 			listConnection();
-		Serial.println("--- ----------- ---");
+		Serial.println("--- ----------- --->");
 		Serial.println("<<< Current Config ===");
 	}
 
@@ -143,45 +149,56 @@ namespace ProcessMenu
 		if (!c)
 			return;
 
-		auto& mgr = BluetoothManager::Instance();
+		auto& btMgr = BluetoothManager::Instance();
 		switch (*c)
 		{
 			case 'A':
-				Serial.println(ConfigMenuHelp::capIoToString(mgr.Capabilities(ConfigMenuHelp::capIoNext(mgr.Capabilities()))));
+			{
+				std::string_view sv = ConfigMenuHelp::capIoToString(btMgr.Capabilities(ConfigMenuHelp::capIoNext(btMgr.Capabilities())));
+				Serial.printf("%.*s\n", static_cast<int>(sv.size()), sv.data());
 				printConfig();
 				break;
+			}
 
 			case 'B':
-				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleBond(mgr.Authentication())));
+				btMgr.Authentication(ConfigMenuHelp::authToggleBond(btMgr.Authentication()));
+				Serial.println("Auth Bond Toggled");
 				printConfig();
 				break;
 			case 'C':
-				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleMitm(mgr.Authentication())));
+				btMgr.Authentication(ConfigMenuHelp::authToggleMitm(btMgr.Authentication()));
+				Serial.println("Auth MitM toggled");
 				printConfig();
 				break;
 			case 'D':
-				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleSC(mgr.Authentication())));
+				btMgr.Authentication(ConfigMenuHelp::authToggleSC(btMgr.Authentication()));
+				Serial.println("Auth Secure Connections Toggled");
 				printConfig();
 				break;
 			case 'E':
-				Serial.println(mgr.Authentication(ConfigMenuHelp::authToggleKP(mgr.Authentication())));
+				btMgr.Authentication(ConfigMenuHelp::authToggleKP(btMgr.Authentication()));
+				Serial.println("Auth Key Press Toggled");
 				printConfig();
 				break;
 
 			case 'F':
-				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleLTK(mgr.Encryption())));
+				btMgr.Encryption(ConfigMenuHelp::encToggleLTK(btMgr.Encryption()));
+				Serial.println("Long Term Key Toggled");
 				printConfig();
 				break;
 			case 'G':
-				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleIRK(mgr.Encryption())));
+				btMgr.Encryption(ConfigMenuHelp::encToggleIRK(btMgr.Encryption()));
+				Serial.println("Identity Resolving Key Toggled");
 				printConfig();
 				break;
 			case 'H':
-				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleCSRK(mgr.Encryption())));
+				btMgr.Encryption(ConfigMenuHelp::encToggleCSRK(btMgr.Encryption()));
+				Serial.println("Connection Signature Resolving Key Toggled");
 				printConfig();
 				break;
 			case 'I':
-				Serial.println(mgr.Encryption(ConfigMenuHelp::encToggleLK(mgr.Encryption())));
+				btMgr.Encryption(ConfigMenuHelp::encToggleLK(btMgr.Encryption()));
+				Serial.println("BR/EDR Link Key Toggled");
 				printConfig();
 				break;
 
@@ -320,9 +337,9 @@ namespace ProcessMenu
 
 	void setupProcessMenu()
 	{
-		auto& mgr = BluetoothManager::Instance();
-		mgr.SubscribeToEvent(BluetoothManager::Event::Connect, reportPeerState);
-		mgr.SubscribeToEvent
+		auto& btMgr = BluetoothManager::Instance();
+		btMgr.SubscribeToEvent(BluetoothManager::Event::Connect, reportPeerState);
+		btMgr.SubscribeToEvent
 		(
 			BluetoothManager::Event::Disconnect, [](const NimBLEConnInfo& connInfo)
 			{
@@ -331,7 +348,7 @@ namespace ProcessMenu
 					selectedHandle.reset();
 			}
 		);
-		mgr.SubscribeToEvent
+		btMgr.SubscribeToEvent
 		(
 			BluetoothManager::Event::AuthComplete, [](const NimBLEConnInfo& connInfo)
 			{

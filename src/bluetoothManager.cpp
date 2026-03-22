@@ -61,7 +61,7 @@ public:
 
 	void onScanRequest(NimBLEExtAdvertising* pAdv, uint8_t instId, NimBLEAddress addr) override
 	{
-		Serial.printf("onScanRequest: Advert %u, address: %s\n", instId, ConfigMenuHelp::formatAddress(addr));
+		Serial.printf("onScanRequest: Advert %u, address: %s\n", instId, addr.toString().c_str());
 	}
 private:
 	BluetoothManager& mgr_;
@@ -99,7 +99,7 @@ public:
 	void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override
 	{
 		Serial.printf("onMTUChange: %u\n", MTU);
-		Serial.printf("%s\n", connInfo.toString());
+		Serial.println(connInfo.toString().c_str());
 	}
 
 	uint32_t onPassKeyDisplay() override

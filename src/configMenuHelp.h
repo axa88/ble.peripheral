@@ -1,6 +1,8 @@
 // configMenuHelp.h
 #pragma once
 #include <NimBLEDevice.h>
+#include <cstdint>
+#include <string_view>
 
 namespace ConfigMenuHelp
 {
@@ -9,7 +11,7 @@ namespace ConfigMenuHelp
 	inline constexpr uint8_t encToggleCSRK(uint8_t csrk) noexcept { return static_cast<uint8_t>(csrk ^ BLE_SM_PAIR_KEY_DIST_SIGN); }
 	inline constexpr uint8_t encToggleLK(uint8_t dualLinkKey) noexcept { return static_cast<uint8_t>(dualLinkKey ^ BLE_SM_PAIR_KEY_DIST_LINK); }
 
-	inline constexpr const char *encToString(uint8_t enc) noexcept
+	inline constexpr std::string_view encToString(uint8_t enc) noexcept
 	{
 		switch (enc & (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK))
 		{
@@ -34,7 +36,7 @@ namespace ConfigMenuHelp
 		}
 	}
 
-	inline constexpr uint8_t capIoNext(uint8_t ioCap)
+	inline constexpr uint8_t capIoNext(uint8_t ioCap) noexcept
 	{
 		switch (ioCap)
 		{
@@ -47,7 +49,7 @@ namespace ConfigMenuHelp
 		}
 	}
 
-	inline constexpr const char *capIoToString(uint8_t ioCap) noexcept
+	inline constexpr std::string_view capIoToString(uint8_t ioCap) noexcept
 	{
 		switch (ioCap)
 		{
@@ -55,7 +57,7 @@ namespace ConfigMenuHelp
 			case BLE_HS_IO_KEYBOARD_ONLY: return "Keyboard input only (can accept passkey from user)";
 			case BLE_HS_IO_DISPLAY_ONLY: return "Display output only (can display passkey to user)";
 			case BLE_HS_IO_DISPLAY_YESNO: return "Display + Confirmation (can display numeric passkey to user and accept binary input confirmation)";
-			case BLE_HS_IO_KEYBOARD_DISPLAY: return "Keyboard + Display (can both display passkey to user and aaccept passkey from user)";
+			case BLE_HS_IO_KEYBOARD_DISPLAY: return "Keyboard + Display (can both display passkey to user and accept passkey from user)";
 			default: return "Unknown pairing input/output capability";
 		}
 	}
@@ -65,7 +67,7 @@ namespace ConfigMenuHelp
 	inline constexpr uint8_t authToggleSC(uint8_t sc) noexcept { return static_cast<uint8_t>(sc ^ BLE_SM_PAIR_AUTHREQ_SC); }
 	inline constexpr uint8_t authToggleKP(uint8_t kp) noexcept { return static_cast<uint8_t>(kp ^ BLE_SM_PAIR_AUTHREQ_KEYPRESS); }
 
-	inline constexpr const char *authToString(uint8_t auth) noexcept
+	inline constexpr std::string_view authToString(uint8_t auth) noexcept
 	{
 		switch (auth & (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_KEYPRESS))
 		{
@@ -90,6 +92,22 @@ namespace ConfigMenuHelp
 		}
 	}
 
-	void printConnInfo(const NimBLEConnInfo &connInfo);
-	std::array<char, 18> formatAddress(const NimBLEAddress &addr);
+	// void printConnInfo(const NimBLEConnInfo &connInfo);
+	inline void printConnInfo(const NimBLEConnInfo& connInfo)
+	{
+		Serial.printf("=== NimBLEConnInfo ===\n");
+		Serial.printf("OTA Address: %s\n", connInfo.getAddress().toString().c_str());
+		Serial.printf("ID Address: %s\n", connInfo.getIdAddress().toString().c_str());
+		Serial.printf("Conn Handle: %u\n", connInfo.getConnHandle());
+		Serial.printf("Conn Interval: %.2f ms\n", connInfo.getConnInterval() * 1.25f);
+		Serial.printf("Supervision Timeout: %u ms\n", connInfo.getConnTimeout() * 10u);
+		Serial.printf("Conn Latency: %u\n", connInfo.getConnLatency());
+		Serial.printf("MTU: %u\n", connInfo.getMTU());
+		Serial.printf("Role: %s\n", (connInfo.isMaster() ? "Master" : (connInfo.isSlave() ? "Slave" : "Unknown")));
+		Serial.printf("Bonded: %s\n", connInfo.isBonded() ? "Yes" : "No");
+		Serial.printf("Encrypted: %s\n", connInfo.isEncrypted() ? "Yes" : "No");
+		Serial.printf("Authenticated: %s\n", connInfo.isAuthenticated() ? "Yes" : "No");
+		Serial.printf("Security Key Size: %u\n", connInfo.getSecKeySize());
+		Serial.printf("======================\n");
+	}
 }
