@@ -204,39 +204,39 @@ namespace ProcessMenu
 
 			case 'J':
 			{
-				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!btMgr.Server()) { Serial.println("Server Uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
 
-				BluetoothManager::Instance().Server()->disconnect(selectedHandle.value());
+				btMgr.Server()->disconnect(selectedHandle.value());
 				break;
 			}
 
 			case 'K':
 			{
-				Serial.printf("restart advert on disconnect:%s\n", BluetoothManager::Instance().AdvertisingRestartOnDisconnect(!BluetoothManager::Instance().AdvertisingRestartOnDisconnect()) ? "y" : "n");
+				Serial.printf("restart advert on disconnect:%s\n", btMgr.AdvertisingRestartOnDisconnect(!btMgr.AdvertisingRestartOnDisconnect()) ? "yes" : "no");
 				break;
 			}
 			case 'L':
 			{
-				Serial.printf("Advert is:%s\n", BluetoothManager::Instance().AdvertisingState((0), !BluetoothManager::Instance().AdvertisingState(0)) ? "on" : "off");
+				Serial.printf("Advert is:%s\n", btMgr.AdvertisingState((0), !btMgr.AdvertisingState(0)) ? "on" : "off");
 				break;
 			}
 
 			case 'M':
 			{
-				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!btMgr.Server()) { Serial.println("Server Uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
 
-				Serial.printf("Peer Mtu is:%u\n", BluetoothManager::Instance().GetPeerMtu(selectedHandle.value()));
+				Serial.printf("Peer Mtu is:%u\n", btMgr.GetPeerMtu(selectedHandle.value()));
 				break;
 			}
 
 			case 'N':
 			{
-				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!btMgr.Server()) { Serial.println("Server Uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
 
-				if (auto opt = BluetoothManager::Instance().Phy(selectedHandle.value(), BluetoothManager::PhyUpdate{ .txPhysMask = BLE_GAP_LE_PHY_1M_MASK, .rxPhysMask = BLE_GAP_LE_PHY_2M_MASK, .phyOptions = BLE_GAP_LE_PHY_CODED_ANY }))
+				if (auto opt = btMgr.Phy(selectedHandle.value(), BluetoothManager::PhyUpdate{ .txPhysMask = BLE_GAP_LE_PHY_1M_MASK, .rxPhysMask = BLE_GAP_LE_PHY_2M_MASK, .phyOptions = BLE_GAP_LE_PHY_CODED_ANY }))
 				{
 					const auto& [tx, rx] = *opt;
 					Serial.printf("After request tx=%u rx=%u\n", static_cast<unsigned>(tx), static_cast<unsigned>(rx));
@@ -249,22 +249,22 @@ namespace ProcessMenu
 
 			case 'O':
 			{
-				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!btMgr.Server()) { Serial.println("Server Uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
 
 				using namespace std::chrono_literals;
-				BluetoothManager::Instance().UpdateConnectionParams(selectedHandle.value(), 30ms, 50ms, 0, 4s);
+				btMgr.UpdateConnectionParams(selectedHandle.value(), 30ms, 50ms, 0, 4s);
 				printConfig();
 				break;
 			}
 
 			case 'P':
 			{
-				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!btMgr.Server()) { Serial.println("Server Uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("No selected Connection"); break; }
 
 				uint16_t rando = 0x001B + (esp_random() % (0x00FB - 0x001B + 1)); // 0x001B (27) to 0x00FB (251)
-				BluetoothManager::Instance().RequestDataLength(selectedHandle.value(), rando);
+				btMgr.RequestDataLength(selectedHandle.value(), rando);
 				printConfig();
 				break;
 			}
@@ -275,9 +275,9 @@ namespace ProcessMenu
 
 			case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
 			{
-				if (!BluetoothManager::Instance().Server()) { Serial.println("Server Uninitialized"); break; }
+				if (!btMgr.Server()) { Serial.println("Server Uninitialized"); break; }
 
-				auto connHandles = BluetoothManager::Instance().Server()->getPeerDevices();
+				auto connHandles = btMgr.Server()->getPeerDevices();
 				if (connHandles.empty()) { Serial.println("No Connections"); break; }
 
 				size_t selection = *c - '0';
@@ -297,7 +297,7 @@ namespace ProcessMenu
 				selectedHandle = connHandles[selection];
 				uint16_t handle = selectedHandle.value();
 				Serial.printf("Selected item %zu (handle %u)\n", selection, static_cast<unsigned>(handle));
-				Serial.printf("%s\n", BluetoothManager::Instance().Server()->getPeerInfoByHandle(handle).toString());
+				Serial.printf("%s\n", btMgr.Server()->getPeerInfoByHandle(handle).toString().c_str());
 
 				break;
 			}

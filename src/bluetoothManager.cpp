@@ -49,7 +49,7 @@ public:
 
 	void onStopped(NimBLEExtAdvertising* pAdv, int reason, uint8_t instId) override
 	{
-		Serial.printf("onStopped: Advert %u, reason: %s\n", instId, NimBLEUtils::returnCodeToString(reason));
+		Serial.printf("onStopped: Advert %u, reason:0x%x %s\n", reason, instId, NimBLEUtils::returnCodeToString(reason));
 		switch (reason) // seems there are only 2 posibilities, timeout and connect
 		{
 			case 0: Serial.println("Client connecting"); return;
@@ -81,7 +81,7 @@ public:
 
 	void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override
 	{
-		Serial.printf("onDisconnect reason: %s\n", NimBLEUtils::returnCodeToString(reason));
+		Serial.printf("onDisconnect reason:0x%x %s\n", reason, NimBLEUtils::returnCodeToString(reason));
 		notify(BluetoothManager::Event::Disconnect, connInfo);
 
 		if (mgr_.advertising_ && mgr_.advertRestarting_)
