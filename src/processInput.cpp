@@ -53,14 +53,14 @@ namespace ProcessInput
 			if (trimmedLen == 0)
 			{
 				passkeyReady = false;
-				Serial.println("Console: no passkey provided");
+				Serial.println("[PAIR] No passkey provided");
 				return;
 			}
 
 			if (trimmedLen > PASSKEY_LEN)
 			{
 				passkeyReady = false;
-				Serial.println("Console: invalid passkey format (digits only)");
+				Serial.println("[ERR] Invalid passkey format (digits only)");
 				return;
 			}
 
@@ -72,7 +72,7 @@ namespace ProcessInput
 				if (ch < '0' || ch > '9')
 				{
 					passkeyReady = false;
-					Serial.println("Console: invalid passkey format (digits only)");
+					Serial.println("[ERR] Invalid passkey format (digits only)");
 					return;
 				}
 				pk = pk * 10 + (unsigned long)(ch - '0');
@@ -89,7 +89,7 @@ namespace ProcessInput
 			else
 			{
 				passkeyReady = false;
-				Serial.println("Console: invalid passkey format (0..999999 expected)");
+				Serial.println("[ERR] Invalid passkey format (0..999999 expected)");
 			}
 
 			return;
@@ -162,7 +162,7 @@ namespace ProcessInput
 			{
 				if (buf_len >= MAX_BUF_LEN)
 				{
-					Serial.printf("\nConsole: input buffer overrun %u\n", (unsigned)MAX_BUF_LEN);
+					Serial.printf("\n[ERR] Input buffer overrun (max %u chars)\n", (unsigned)MAX_BUF_LEN);
 					purgeSerialLine();
 					buf_len = 0;
 					buf[0] = '\0';

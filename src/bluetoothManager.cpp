@@ -49,19 +49,19 @@ public:
 
 	void onStopped(NimBLEExtAdvertising* pAdv, int reason, uint8_t instId) override
 	{
-		Serial.printf("onStopped: Advert %u, reason:0x%x %s\n", reason, instId, NimBLEUtils::returnCodeToString(reason));
+		Serial.printf("[BT] Advertising stopped (instance %u), reason:0x%x %s\n", instId, reason, NimBLEUtils::returnCodeToString(reason));
 		switch (reason) // seems there are only 2 posibilities, timeout and connect
 		{
-			case 0: Serial.println("Client connecting"); return;
-			case BLE_HS_ETIMEOUT: Serial.println("Time expired"); break;
-			case BLE_HS_EDONE: Serial.println("Solicited stop"); break;
+			case 0: Serial.println("[BT] Client connecting"); return;
+			case BLE_HS_ETIMEOUT: Serial.println("[BT] Advertising timed out"); break;
+			case BLE_HS_EDONE: Serial.println("[BT] Advertising stopped (solicited)"); break;
 			default: break;
 		}
 	}
 
 	void onScanRequest(NimBLEExtAdvertising* pAdv, uint8_t instId, NimBLEAddress addr) override
 	{
-		Serial.printf("onScanRequest: Advert %u, address: %s\n", instId, addr.toString().c_str());
+		Serial.printf("[BT] Scan request: instance %u, address: %s\n", instId, addr.toString().c_str());
 	}
 private:
 	BluetoothManager& mgr_;
@@ -75,13 +75,13 @@ public:
 
 	void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override
 	{
-		Serial.println("onConnect");
+		Serial.println("[BT] Client connected");
 		notify(BluetoothManager::Event::Connect, connInfo);
 	}
 
 	void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override
 	{
-		Serial.printf("onDisconnect reason:0x%x %s\n", reason, NimBLEUtils::returnCodeToString(reason));
+		Serial.printf("[BT] Client disconnected, reason:0x%x %s\n", reason, NimBLEUtils::returnCodeToString(reason));
 		notify(BluetoothManager::Event::Disconnect, connInfo);
 
 		if (mgr_.advertising_ && mgr_.advertRestarting_)
@@ -92,39 +92,44 @@ public:
 			bool started = mgr_.advertising_->start(0);
 		#endif
 
-			Serial.printf(started ? "Started advertising\n" : "Failed to start advertising\n");
+			Serial.println(started ? "[BT] Advertising restarted" : "[ERR] Failed to restart advertising");
 		}
 	}
 
 	void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override
 	{
-		Serial.printf("onMTUChange: %u\n", MTU);
-		Serial.println(connInfo.toString().c_str());
+		Serial.printf("[BT] MTU changed: %u\n", MTU);
 	}
 
 	uint32_t onPassKeyDisplay() override
 	{
-		Serial.println("onPassKeyDisplay");
 		auto pk = esp_random() % 1000000;
-		Serial.printf("Displayed passkey for entry on remote device: %06u\n", pk);
+		Serial.printf("[PAIR] Passkey for remote device entry: %06u\n", pk);
 		return pk;
 	}
 
 	void onPassKeyEntry(NimBLEConnInfo& connInfo) override
 	{
-		Serial.println("onPassKeyEntry: Enter passkey displayed on remote device here: ");
 		ProcessMenu::consoleMode = ConsoleMode::Passkey;
 		ProcessInput::passkeyReady = false;
 		ProcessInput::passkeyValue = 0;
+
+		Serial.println("[PAIR] ==================================================");
+		Serial.println("[PAIR] Passkey required");
+		Serial.println("[PAIR] Enter the 6-digit passkey shown on the remote device:");
+		Serial.print("[PAIR] > ");
+
 		unsigned long start = millis();
 		const unsigned long timeout = 25000;
 		while (!ProcessInput::passkeyReady && (millis() - start) < timeout)
 			vTaskDelay(pdMS_TO_TICKS(20));
 
 		if (!ProcessInput::passkeyReady)
-			Serial.println("passkey entry: timeout");
+			Serial.println("[PAIR] Passkey entry timed out");
+		else
+			Serial.printf("[PAIR] Passkey entered: %06u\n", ProcessInput::passkeyValue.load());
 
-		Serial.printf("key entered: %u\n", ProcessInput::passkeyValue.load());
+		Serial.println("[PAIR] ==================================================");
 		NimBLEDevice::injectPassKey(connInfo, ProcessInput::passkeyValue);
 	}
 
@@ -133,8 +138,9 @@ public:
 		ProcessMenu::consoleMode = ConsoleMode::PinConfirm;
 		ProcessInput::confirmReady = ProcessInput::confirmAccept = false;
 
-		Serial.printf("Confirm passkey: %06u\n", pin);
-		Serial.println("onConfirmPassKey: ('y'/'n')?");
+		Serial.println("[PAIR] ==================================================");
+		Serial.printf("[PAIR] Confirm this passkey matches the remote device: %06u\n", pin);
+		Serial.print("[PAIR] Accept? (y/n) > ");
 
 		unsigned long start = millis();
 		const unsigned long timeout = 25000;
@@ -142,15 +148,17 @@ public:
 			vTaskDelay(pdMS_TO_TICKS(20));
 
 		if (!ProcessInput::confirmReady)
-			Serial.println("passkey confirm: timeout");
+			Serial.println("[PAIR] Passkey confirmation timed out");
+		else
+			Serial.printf("[PAIR] Passkey %s\n", ProcessInput::confirmAccept ? "accepted" : "rejected");
 
-		Serial.printf("onConfirmPassKey: %s\n", ProcessInput::confirmAccept ? "Accepted" : "Rejected");
+		Serial.println("[PAIR] ==================================================");
 		NimBLEDevice::injectConfirmPasskey(connInfo, ProcessInput::confirmAccept);
 	}
 
 	void onAuthenticationComplete(NimBLEConnInfo& connInfo) override
 	{
-		Serial.println("onAuthenticationComplete");
+		Serial.println("[PAIR] Authentication complete");
 		notify(BluetoothManager::Event::AuthComplete, connInfo);
 	}
 
@@ -291,7 +299,6 @@ void BluetoothManager::UpdateConnectionParams(uint16_t connHandle, std::chrono::
 	auto maxUnits = toIntervalUnits(maxIntervalMs);
 	auto timeoutUnits = toTimeoutUnits(supervisionTimeoutMs);
 
-	Serial.printf("UpdateConnectionParams (time) -> minUnits=%u maxUnits=%u latency=%u timeoutUnits=%u\n", minUnits, maxUnits, latency, timeoutUnits);
 	server_->updateConnParams(connHandle, minUnits, maxUnits, latency, timeoutUnits);
 }
 
@@ -301,7 +308,7 @@ void BluetoothManager::RequestDataLength(uint16_t connHandle, uint16_t octets)
 
 	if (octets < 0x001B || octets > 0x00FB)
 	{
-		Serial.printf("RequestDataLength: out of range: %u\n", octets);
+		Serial.printf("[ERR] RequestDataLength out of range: %u\n", octets);
 		return;
 	}
 
@@ -312,7 +319,7 @@ void BluetoothManager::SetupBluetooth()
 {
 	if (initialized_) return;
 	initialized_ = true;
-	Serial.println("Initializing NimBLE...");
+	Serial.println("[BT] Initializing NimBLE...");
 
 #if !CONFIG_BT_NIMBLE_EXT_ADV
 	NimBLEDevice::init("ESP-Wroom");
@@ -343,9 +350,9 @@ void BluetoothManager::SetupBluetooth()
 	advertising_->addServiceUUID(SERVICE_UUID);
 	advertising_->enableScanResponse(true);
 	if (advertising_->start())
-		Serial.printf("Started advertising\n");
+		Serial.println("[BT] Advertising started");
 	else
-		Serial.printf("Failed to start advertising\n");
+		Serial.println("[ERR] Failed to start advertising");
 #else
 	uint8_t primaryPhy = BLE_HCI_LE_PHY_1M; /** for advertising, can be one of BLE_HCI_LE_PHY_1M or BLE_HCI_LE_PHY_CODED */
 	uint8_t secondaryPhy = BLE_HCI_LE_PHY_1M; /** for advertising/connecting, can be one of BLE_HCI_LE_PHY_1M, BLE_HCI_LE_PHY_2M or BLE_HCI_LE_PHY_CODED */
@@ -376,13 +383,13 @@ void BluetoothManager::SetupBluetooth()
 	if (advertising_->setInstanceData(0, extAdvMent))
 	{
 		if (advertising_->start(0))
-			Serial.printf("Started advertising\n");
+			Serial.println("[BT] Advertising started");
 		else
-			Serial.printf("Failed to start advertising\n");
+			Serial.println("[ERR] Failed to start advertising");
 	}
 	else
-		Serial.printf("Failed to register advertisement data\n");
+		Serial.println("[ERR] Failed to register advertisement data");
 
-	Serial.printf("isAdvertising(): %s\n", advertising_->isAdvertising() ? "true" : "false");
+	Serial.printf("[BT] isAdvertising(): %s\n", advertising_->isAdvertising() ? "true" : "false");
 #endif
 } // SetupBluetooth

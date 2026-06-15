@@ -10,16 +10,16 @@ void setup()
 {
 	Serial.begin(115200);
 	delay(3000);
-	Serial.println("Booting");
+	Serial.println("[BOOT] Starting...");
 
 	NetMgr::setupNetwork();
-	Serial.println("Net init");
+	Serial.println("[BOOT] Network initialized");
 
 	BluetoothManager::Instance().SetupBluetooth();
 	// Bluetooth::SetupBluetooth();
-	Serial.println("BT init");
+	Serial.println("[BOOT] Bluetooth initialized");
 
-	Serial.println("booted");
+	Serial.println("[BOOT] Ready");
 
 	ProcessMenu::printConfigMenu();
 	ProcessMenu::setupProcessMenu();

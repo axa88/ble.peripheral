@@ -36,7 +36,7 @@ namespace NetMgr
 	{
 		// WiFi setup
 		if (!WiFi.config(local_IP, gateway, subnet))
-			Serial.println("STA Failed to configure");
+			Serial.println("[ERR] STA failed to configure");
 
 		WiFi.mode(WIFI_STA);
 		WiFi.setAutoReconnect(true);
@@ -48,13 +48,12 @@ namespace NetMgr
 			{
 				if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
 				{
-					Serial.println("WiFi disconnected. Attempting reconnect...");
+					Serial.println("[NET] WiFi disconnected, reconnecting...");
 					WiFi.begin(ssid, password);
 				}
 				else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP)
 				{
-					Serial.print("WiFi connected! IP: ");
-					Serial.println(WiFi.localIP());
+					Serial.printf("[NET] WiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
 					lastRestartAttempt = millis(); // mark time of last successful connection
 				}
 			});
@@ -69,18 +68,18 @@ namespace NetMgr
 		ArduinoOTA.onStart([]()
 		{
 			const char *type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
-			Serial.printf("OTA Start: updating %s\n", type);
+			Serial.printf("[OTA] Update starting: %s\n", type);
 		});
 
 		ArduinoOTA.onEnd([]()
 		{
-			Serial.println("OTA End: rebooting");
+			Serial.println("[OTA] Update complete, rebooting");
 		});
 
 		ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
 		{
 			if (total == 0) return;
-			Serial.printf("OTA Progress: %u%%\r", (progress * 100) / total);
+			Serial.printf("[OTA] Progress: %u%%\r", (progress * 100) / total);
 		});
 
 		ArduinoOTA.onError([](ota_error_t error)
@@ -95,11 +94,11 @@ namespace NetMgr
 				case OTA_END_ERROR: desc = "End Failed"; break;
 				default: break;
 			}
-			Serial.printf("OTA Error[%u]: %s\n", error, desc);
+			Serial.printf("[ERR] OTA error [%u]: %s\n", error, desc);
 		});
 
 		ArduinoOTA.begin();
-		Serial.println("OTA init");
+		Serial.println("[OTA] Initialized");
 	}
 
 	void loopNetwork() // wont work while console input blocks
@@ -109,7 +108,7 @@ namespace NetMgr
 		// Restart if WiFi disconnected too long
 		if (WiFi.status() != WL_CONNECTED && millis() - lastRestartAttempt >= restartInterval)
 		{
-			Serial.println("WiFi wont connect. Reboot...");
+			Serial.println("[NET] WiFi unreachable for too long, rebooting...");
 			ESP.restart();
 		}
 	}
