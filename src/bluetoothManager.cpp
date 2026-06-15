@@ -256,7 +256,7 @@ std::optional<BluetoothManager::PhyResult> BluetoothManager::Phy(uint16_t connHa
 		if (!ok) return std::nullopt;
 	}
 
-	uint8_t txPhy, rxPhy = 0;
+	uint8_t txPhy = 0, rxPhy = 0;
 	if (!server_->getPhy(connHandle, &txPhy, &rxPhy))
 		return std::nullopt;
 

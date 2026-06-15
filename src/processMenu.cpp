@@ -313,6 +313,7 @@ namespace ProcessMenu
 		Serial.println();
 	}
 
+	// TODO: implement submenu
 	void handleConfigInputSub()
 	{
 		ConsoleMode mode = consoleMode;
@@ -325,12 +326,16 @@ namespace ProcessMenu
 
 		switch (*c)
 		{
-			case 'D': Serial.println("- D --> Disconnect");
+			case 'D':
+				Serial.println("- D --> Disconnect");
+				// see :J
+				break;
 
 			case 'X':
 				consoleMode = ConsoleMode::Config;
 				printConfig();
 				break;
+				
 			default: break;
 		}
 	}

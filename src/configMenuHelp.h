@@ -1,5 +1,6 @@
 // configMenuHelp.h
 #pragma once
+#include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <cstdint>
 #include <string_view>

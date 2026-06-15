@@ -1,5 +1,16 @@
 {
-	"multiCommand.commands": [
+	"platformio-ide.toolbar": [
+		{ "text": "$(home)", "tooltip": "PIO Home", "commands": "platformio-ide.showHome" },
+		{ "text": "$(trashcan)", "tooltip": "Clean", "commands": "platformio-ide.clean" },
+		{ "text": "$(check)", "tooltip": "Build", "commands": "platformio-ide.build" },
+		{ "text": "$(arrow-right)", "tooltip": "Upload (uses selected env)", "commands": "platformio-ide.upload" },
+		{ "text": "$(beaker)", "tooltip": "PlatformIO: Test", "commands": "platformio-ide.test" },
+		{ "text": "$(plug)", "tooltip": "Serial Monitor", "commands": "platformio-ide.serialMonitor" },
+		{ "text": "$(multiple-windows)", "tooltip": "Serial Monitor in New Window", "commands": "multiCommand.openSerialMonitorInNewWindow" },
+		{ "text": "$(terminal)", "tooltip": "New Terminal", "commands": "platformio-ide.newTerminal" },
+		{ "text": "$(search)", "tooltip": "Open Search in New Window", "commands": "multiCommand.openSearchInNewWindow" }
+	],
+		"multiCommand.commands": [
 		{
 			"command": "multiCommand.openSerialMonitorInNewWindow",
 			"sequence": [

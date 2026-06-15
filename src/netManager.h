@@ -1,8 +1,9 @@
-// network.h
+// netManager.h
 #pragma once
 #include <Arduino.h>
+#include <atomic>
 
-namespace Network
+namespace NetMgr
 {
 	extern const char *ssid;
 	extern const char *password;
@@ -10,9 +11,7 @@ namespace Network
 	extern IPAddress gateway;
 	extern IPAddress subnet;
 
-	extern unsigned long lastReconnectAttempt;
-	extern const unsigned long reconnectInterval;
-	extern unsigned long lastRestartAttempt;
+	extern std::atomic<unsigned long> lastRestartAttempt;
 	extern const unsigned long restartInterval;
 
 	void setupNetwork();

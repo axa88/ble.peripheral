@@ -1,18 +1,19 @@
 // main.cpp
+#include <Arduino.h>
 #include "processMenu.h"
 #include "processInput.h"
 #include "bluetoothManager.h"
 // #include "bluetooth.h"
-// #include "network.h"
+#include "netManager.h"
 
 void setup()
 {
 	Serial.begin(115200);
-	delay(5000);
+	delay(3000);
 	Serial.println("Booting");
 
-	// Network::setupNetwork();
-	// Serial.println("Net init");
+	NetMgr::setupNetwork();
+	Serial.println("Net init");
 
 	BluetoothManager::Instance().SetupBluetooth();
 	// Bluetooth::SetupBluetooth();
@@ -26,7 +27,7 @@ void setup()
 
 void loop()
 {
-	// loopNetwork();
+	NetMgr::loopNetwork();
 	ProcessMenu::handleConfigInput();
 	ProcessMenu::handleConfigInputSub();
 	ProcessInput::handlePairingInput();
