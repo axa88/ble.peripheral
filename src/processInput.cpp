@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "processInput.h"
 #include "processMenu.h"
+#include <NimBLEDevice.h>
 #include <cctype>       // isspace, isprint, isdigit, toupper
 #include <cstddef>      // size_t
 
@@ -76,7 +77,6 @@ namespace ProcessInput
 					return;
 				}
 				pk = pk * 10 + (unsigned long)(ch - '0');
-				// optional early bound check to avoid overflow
 				if (pk > 999999UL)
 					break;
 			}
@@ -108,6 +108,38 @@ namespace ProcessInput
 			confirmReady = true;
 			return;
 		}
+
+		if (curMode == ConsoleMode::SetMtu)
+		{
+			if (trimmedLen == 0)
+			{
+				Serial.println("[ERR] No value entered, MTU unchanged");
+				ProcessMenu::consoleMode = ConsoleMode::Config;
+				return;
+			}
+
+			unsigned long mtu = 0;
+			bool valid = true;
+			for (size_t i = 0; i < trimmedLen; ++i)
+			{
+				char ch = s[start + i];
+				if (ch < '0' || ch > '9') { valid = false; break; }
+				mtu = mtu * 10 + (unsigned long)(ch - '0');
+			}
+
+			if (!valid || mtu < 23 || mtu > 517)
+			{
+				Serial.println("[ERR] Invalid MTU (must be 23-517), MTU unchanged");
+			}
+			else
+			{
+				NimBLEDevice::setMTU(static_cast<uint16_t>(mtu));
+				Serial.printf("[CFG] Local MTU set to %lu bytes (takes effect on next connection)\n", mtu);
+			}
+
+			ProcessMenu::consoleMode = ConsoleMode::Config;
+			return;
+		}
 	} // processBufferedLine
 
 	void handlePairingInput()
@@ -115,7 +147,7 @@ namespace ProcessInput
 		static ConsoleMode prevMode = ConsoleMode::Uninitialized;
 
 		ConsoleMode curMode = ProcessMenu::consoleMode;
-		if (curMode != ConsoleMode::Passkey && curMode != ConsoleMode::PinConfirm)
+		if (curMode != ConsoleMode::Passkey && curMode != ConsoleMode::PinConfirm && curMode != ConsoleMode::SetMtu)
 			return;
 
 		if (prevMode != ConsoleMode::Uninitialized && prevMode != curMode && buf_len > 0)
@@ -127,19 +159,18 @@ namespace ProcessInput
 		}
 		prevMode = curMode;
 
-		while (Serial.available() > 0) // read available
+		while (Serial.available() > 0)
 		{
-            int rv = Serial.read();
-            if (rv < 0) break;
-            char c = static_cast<char>(rv);
-            if (c == '\r') continue;
+			int rv = Serial.read();
+			if (rv < 0) break;
+			char c = static_cast<char>(rv);
+			if (c == '\r') continue;
 
 			if (rv == 8 || rv == 127) // backspace (BS=8) or DEL (127)
 			{
 				if (buf_len > 0)
 				{
 					--buf_len;
-					// only maintain C-string if other code needs it; safe to keep one write
 					buf[buf_len] = '\0';
 					Serial.write('\b');
 					Serial.write(' ');
@@ -147,18 +178,17 @@ namespace ProcessInput
 				}
 				continue;
 			}
-			
 
-			if (c == '\n') // terminate on new line -> submit
+			if (c == '\n') // terminate on newline -> submit
 			{
-				Serial.println(); // echo newline
+				Serial.println();
 				processBufferedLine(buf, buf_len);
 				buf_len = 0;
 				purgeSerialLine();
 				return;
 			}
 
-			if (isprint((unsigned char)c)) // echo printable chars up to limit
+			if (isprint((unsigned char)c))
 			{
 				if (buf_len >= MAX_BUF_LEN)
 				{
@@ -169,15 +199,17 @@ namespace ProcessInput
 					return;
 				}
 
-				size_t limit = (curMode == ConsoleMode::Passkey) ? PASSKEY_LEN : SINGLE_LEN;
+				size_t limit = (curMode == ConsoleMode::Passkey) ? PASSKEY_LEN
+				             : (curMode == ConsoleMode::SetMtu)   ? MAX_BUF_LEN  // wait for Enter
+				             :                                       SINGLE_LEN;
 				if (buf_len < limit)
 				{
 					buf[buf_len++] = c;
-					Serial.write(c); // echo typed char
-					
-					if (buf_len >= limit) // buffer reached mode limit -> submit
+					Serial.write(c);
+
+					if (buf_len >= limit)
 					{
-						Serial.println(); // echo newline
+						Serial.println();
 						processBufferedLine(buf, buf_len);
 						buf_len = 0;
 						purgeSerialLine();

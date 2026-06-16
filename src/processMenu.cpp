@@ -70,25 +70,54 @@ namespace
 
 	void printConfig()
 	{
-		Serial.println();
-		Serial.println("[CFG] === Current Config ===");
-		Serial.printf("[CFG] Device Address: %s\n", NimBLEDevice::toString().c_str());
-
 		auto& btMgr = BluetoothManager::Instance();
 
-		Serial.println("[CFG] --- Security ---");
+		Serial.println();
+		Serial.println("[CFG] ============================================================");
+		Serial.println("[CFG] === Peripheral");
+		Serial.printf( "[CFG]     Address:        %s\n", NimBLEDevice::toString().c_str());
+		Serial.printf( "[CFG]     Advertising:    %s\n", btMgr.AdvertisingState(0) ? "on" : "off");
+		Serial.println("[CFG]     --- Security ---");
 		std::string_view caps = ConfigMenuHelp::capIoToString(btMgr.Capabilities());
-		Serial.printf("[CFG] capabilities:   %.*s\n", static_cast<int>(caps.size()), caps.data());
+		Serial.printf( "[CFG]     capabilities:   %.*s\n", static_cast<int>(caps.size()), caps.data());
 		std::string_view auth = ConfigMenuHelp::authToString(btMgr.Authentication());
-		Serial.printf("[CFG] authentication: %.*s\n", static_cast<int>(auth.size()), auth.data());
+		Serial.printf( "[CFG]     authentication: %.*s\n", static_cast<int>(auth.size()), auth.data());
 		std::string_view enc = ConfigMenuHelp::encToString(btMgr.Encryption());
-		Serial.printf("[CFG] encryption:     %.*s\n", static_cast<int>(enc.size()), enc.data());
-		Serial.println("[CFG] --- Connections ---");
+		Serial.printf( "[CFG]     encryption:     %.*s\n", static_cast<int>(enc.size()), enc.data());
+
+		Serial.println("[CFG] ============================================================");
+
 		if (!btMgr.Server())
-			Serial.println("[CFG] Server Uninitialized");
+			Serial.println("[CFG] === Server uninitialized");
 		else
-			listConnection();
-		Serial.println("[CFG] === End Config ===");
+		{
+			auto connections = btMgr.Server()->getPeerDevices();
+			if (connections.empty())
+				Serial.println("[CFG] === Connected Peers: none connected");
+			else
+			{
+				for (size_t i = 0; i < connections.size(); ++i)
+				{
+					uint16_t handle = connections[i];
+					NimBLEConnInfo info = btMgr.Server()->getPeerInfoByHandle(handle);
+					bool selected = selectedHandle.has_value() && selectedHandle.value() == handle;
+					Serial.printf("[CFG] === ConnectedPeer [%zu]%s\n", i, selected ? " <-- selected" : "");
+					Serial.printf("[CFG]     Address:         %s\n", info.getAddress().toString().c_str());
+					Serial.printf("[CFG]     Handle:          %u\n", static_cast<unsigned>(handle));
+					Serial.printf("[CFG]     Interval:        %.1f ms\n", info.getConnInterval() * 1.25f);
+					Serial.printf("[CFG]     Timeout:         %u ms\n", info.getConnTimeout() * 10);
+					Serial.printf("[CFG]     Latency:         %u\n", info.getConnLatency());
+					Serial.printf("[CFG]     MTU:             %u bytes\n", info.getMTU());
+					Serial.printf("[CFG]     Bonded:          %s\n", info.isBonded()    ? "yes" : "no");
+					Serial.printf("[CFG]     Encrypted:       %s\n", info.isEncrypted() ? "yes" : "no");
+					Serial.printf("[CFG]     Authenticated:   %s\n", info.isAuthenticated() ? "yes" : "no");
+					Serial.printf("[CFG]     Key Size:        %u\n", info.getSecKeySize());
+					if (i < connections.size() - 1)
+						Serial.println("[CFG]     --------------------------------------------------------");
+				}
+			}
+		}
+		Serial.println("[CFG] ============================================================");
 	}
 
 	std::optional<char> readCommandChar() // Skip leading whitespace, CR/LF, read a single char
@@ -130,6 +159,10 @@ namespace ProcessMenu
 	{
 		Serial.println();
 		Serial.println("[MENU] ==================== Config Menu ====================");
+		Serial.println("[MENU] Connection:");
+		Serial.println("[MENU]   0-9 --> Select active connection by index");
+		Serial.println("[MENU]          (a device must connect first; index shown in peer list)");
+		Serial.println("[MENU]");
 		Serial.println("[MENU] Pairing:");
 		Serial.println("[MENU]   A --> Cycle I/O Capabilities");
 		Serial.println("[MENU]");
@@ -153,16 +186,15 @@ namespace ProcessMenu
 		Serial.println("[MENU]   L --> Toggle Advertising");
 		Serial.println("[MENU]");
 		Serial.println("[MENU] Peer (requires a selected connection):");
-		Serial.println("[MENU]   M --> Get Mtu");
+		Serial.println("[MENU]   M --> Read peer MTU");
 		Serial.println("[MENU]   N --> Set Phy (1M tx / 2M rx)");
 		Serial.println("[MENU]   O --> Set Connection Parameters");
 		Serial.println("[MENU]   P --> Request Random Data Length");
+		Serial.println("[MENU]   Q --> Set Local MTU (takes effect on next connection)");
 		Serial.println("[MENU]");
 		Serial.println("[MENU] Info:");
 		Serial.println("[MENU]   Y --> Print Config");
 		Serial.println("[MENU]   Z --> Print This Menu");
-		Serial.println("[MENU]");
-		Serial.println("[MENU]   0-9 --> Select Connection by index");
 		Serial.println("[MENU] =======================================================");
 		printStatus();
 	}
@@ -314,6 +346,14 @@ namespace ProcessMenu
 				break;
 			}
 
+			case 'Q':
+			{
+				Serial.printf("[CFG] Current local MTU: %u bytes\n", NimBLEDevice::getMTU());
+				Serial.println("[CFG] Enter new MTU (23-517): ");
+				consoleMode = ConsoleMode::SetMtu;
+				return; // skip printStatus until value is entered
+			}
+
 			case 'Y': printConfig(); break;
 
 			case 'Z': printConfigMenu(); break;
@@ -323,7 +363,7 @@ namespace ProcessMenu
 				if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); break; }
 
 				auto connHandles = btMgr.Server()->getPeerDevices();
-				if (connHandles.empty()) { Serial.println("[BT] No connections"); break; }
+				if (connHandles.empty()) { Serial.println("[BT] No connections - wait for a device to connect first"); break; }
 
 				size_t selection = *c - '0';
 				if (selection >= connHandles.size())
@@ -341,6 +381,7 @@ namespace ProcessMenu
 
 				selectedHandle = connHandles[selection];
 				Serial.printf("[BT] Selected [%zu] %s\n", selection, describeHandle(selectedHandle).c_str());
+				Serial.println("[HINT] Peer commands now active: M (MTU)  N (PHY)  O (conn params)  P (data len)  J (disconnect)");
 				break;
 			}
 
@@ -385,7 +426,14 @@ namespace ProcessMenu
 	void setupProcessMenu()
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.SubscribeToEvent(BluetoothManager::Event::Connect, reportPeerState);
+		btMgr.SubscribeToEvent
+		(
+			BluetoothManager::Event::Connect, [](const NimBLEConnInfo& connInfo)
+			{
+				reportPeerState(connInfo);
+				Serial.println("[HINT] Press 0 (or the connection index above) to select this connection.");
+			}
+		);
 		btMgr.SubscribeToEvent
 		(
 			BluetoothManager::Event::Disconnect, [](const NimBLEConnInfo& connInfo)
@@ -401,6 +449,7 @@ namespace ProcessMenu
 			{
 				ProcessMenu::consoleMode = ConsoleMode::Config;
 				reportPeerState(connInfo);
+				printStatus();
 			}
 		);
 	}

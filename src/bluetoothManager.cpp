@@ -87,12 +87,14 @@ public:
 		if (mgr_.advertising_ && mgr_.advertRestarting_)
 		{
 		#if !CONFIG_BT_NIMBLE_EXT_ADV
-			bool started = mgr_.advertising_->start();
+			bool advStarted = mgr_.advertising_->start();
 		#else
-			bool started = mgr_.advertising_->start(0);
+			bool advStarted = mgr_.advertising_->start(0);
 		#endif
 
-			Serial.println(started ? "[BT] Advertising restarted" : "[ERR] Failed to restart advertising");
+			Serial.println(advStarted ? "[BT] Advertising restarted" : "[ERR] Failed to restart advertising");
+			if (advStarted)
+				Serial.println("[HINT] Waiting for a client to connect. Press Z to see the menu.");
 		}
 	}
 

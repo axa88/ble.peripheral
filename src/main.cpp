@@ -21,16 +21,30 @@ void setup()
 
 	Serial.println("[BOOT] Ready");
 
-	ProcessMenu::printConfigMenu();
 	ProcessMenu::setupProcessMenu();
 }
 
 void loop()
 {
 	NetMgr::loopNetwork();
-	ProcessMenu::handleConfigInput();
-	ProcessMenu::handleConfigInputSub();
-	ProcessInput::handlePairingInput();
+
+	#if ARDUINO_USB_CDC_ON_BOOT
+	static bool menuPrinted = false;
+	if (!menuPrinted && Serial)
+	{
+		while (Serial.available() > 0) Serial.read(); // drain garbage from CDC enumeration
+		ProcessMenu::printConfigMenu();
+		menuPrinted = true;
+	}
+	if (menuPrinted)
+	{
+	#endif
+		ProcessMenu::handleConfigInput();
+		ProcessMenu::handleConfigInputSub();
+		ProcessInput::handlePairingInput();
+	#if ARDUINO_USB_CDC_ON_BOOT
+	}
+	#endif
 
 	yield();
 }
