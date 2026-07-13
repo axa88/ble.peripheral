@@ -41,7 +41,7 @@ static const char att_11[] = "Insufficient resources";
 static const char att_unknown[] = "ATT: Unknown error";
 
 static const char *const nimble_att_table[] = {att_00, att_01, att_02, att_03, att_04, att_05, att_06, att_07, att_08,
-											   att_09, att_0A, att_0B, att_0C, att_0D, att_0E, att_0F, att_10, att_11};
+												att_09, att_0A, att_0B, att_0C, att_0D, att_0E, att_0F, att_10, att_11};
 
 /* HCI (base 0x200) -- documented condition text for common HCI codes */
 static const char hci_00[] = "Success";

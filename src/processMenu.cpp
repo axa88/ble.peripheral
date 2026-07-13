@@ -63,9 +63,7 @@ namespace
 	{
 		auto& btMgr = BluetoothManager::Instance();
 		bool advOn = btMgr.AdvertisingState(0);
-		Serial.printf("[STATUS] Advertising:%s | Selected:%s\n",
-			advOn ? "on" : "off",
-			describeHandle(selectedHandle).c_str());
+		Serial.printf("[STATUS] Advertising:%s | Selected:%s\n", advOn ? "on" : "off", describeHandle(selectedHandle).c_str());
 	}
 
 	void printConfig()
@@ -76,6 +74,7 @@ namespace
 		Serial.println("[CFG] ============================================================");
 		Serial.println("[CFG] === Peripheral");
 		Serial.printf( "[CFG]     Address:        %s\n", NimBLEDevice::toString().c_str());
+		Serial.printf( "[CFG]     Adv name:       %s\n", btMgr.AdvertisingName().c_str());
 		Serial.printf( "[CFG]     Advertising:    %s\n", btMgr.AdvertisingState(0) ? "on" : "off");
 		Serial.println("[CFG]     --- Security ---");
 		std::string_view caps = ConfigMenuHelp::capIoToString(btMgr.Capabilities());
@@ -93,7 +92,7 @@ namespace
 		{
 			auto connections = btMgr.Server()->getPeerDevices();
 			if (connections.empty())
-				Serial.println("[CFG] === Connected Peers: none connected");
+				Serial.println("[CFG] === Connected Peers: none");
 			else
 			{
 				for (size_t i = 0; i < connections.size(); ++i)
@@ -101,7 +100,7 @@ namespace
 					uint16_t handle = connections[i];
 					NimBLEConnInfo info = btMgr.Server()->getPeerInfoByHandle(handle);
 					bool selected = selectedHandle.has_value() && selectedHandle.value() == handle;
-					Serial.printf("[CFG] === ConnectedPeer [%zu]%s\n", i, selected ? " <-- selected" : "");
+					Serial.printf("[CFG] === Connected Peer [%zu]%s\n", i, selected ? " <-- selected" : "");
 					Serial.printf("[CFG]     Address:         %s\n", info.getAddress().toString().c_str());
 					Serial.printf("[CFG]     Handle:          %u\n", static_cast<unsigned>(handle));
 					Serial.printf("[CFG]     Interval:        %.1f ms\n", info.getConnInterval() * 1.25f);
@@ -112,6 +111,8 @@ namespace
 					Serial.printf("[CFG]     Encrypted:       %s\n", info.isEncrypted() ? "yes" : "no");
 					Serial.printf("[CFG]     Authenticated:   %s\n", info.isAuthenticated() ? "yes" : "no");
 					Serial.printf("[CFG]     Key Size:        %u\n", info.getSecKeySize());
+					Serial.printf("[CFG]     RSSI:            %d dBm\n", btMgr.GetPeerRssi(handle));
+
 					if (i < connections.size() - 1)
 						Serial.println("[CFG]     --------------------------------------------------------");
 				}
@@ -146,8 +147,7 @@ namespace
 		if (r < 0)
 			return std::nullopt;
 
-		char cmd = static_cast<char>(toupper(static_cast<unsigned char>(r)));
-		return cmd;
+		return static_cast<char>(toupper(static_cast<unsigned char>(r)));
 	}
 } // namespace
 
@@ -184,6 +184,7 @@ namespace ProcessMenu
 		Serial.println("[MENU] Advertising:");
 		Serial.println("[MENU]   K --> Toggle Advert Restart on Disconnect");
 		Serial.println("[MENU]   L --> Toggle Advertising");
+		Serial.println("[MENU]   V --> Set Advertising Interval");
 		Serial.println("[MENU]");
 		Serial.println("[MENU] Peer (requires a selected connection):");
 		Serial.println("[MENU]   M --> Read peer MTU");
@@ -191,6 +192,12 @@ namespace ProcessMenu
 		Serial.println("[MENU]   O --> Set Connection Parameters");
 		Serial.println("[MENU]   P --> Request Random Data Length");
 		Serial.println("[MENU]   Q --> Set Local MTU (takes effect on next connection)");
+		Serial.println("[MENU]   T --> Read RSSI");
+		Serial.println("[MENU]");
+		Serial.println("[MENU] Bonds:");
+		Serial.println("[MENU]   R --> List all bonds");
+		Serial.println("[MENU]   S --> Delete bond for selected connection");
+		Serial.println("[MENU]   U --> Delete ALL bonds");
 		Serial.println("[MENU]");
 		Serial.println("[MENU] Info:");
 		Serial.println("[MENU]   Y --> Print Config");
@@ -289,7 +296,7 @@ namespace ProcessMenu
 
 			case 'K':
 			{
-				Serial.printf("[CFG] restart advert on disconnect: %s\n", btMgr.AdvertisingRestartOnDisconnect(!btMgr.AdvertisingRestartOnDisconnect()) ? "yes" : "no");
+				Serial.printf("[CFG] restart advert when stopped after connect: %s\n", btMgr.AdvertisingRestart(!btMgr.AdvertisingRestart()) ? "yes" : "no");
 				break;
 			}
 			case 'L':
@@ -312,15 +319,8 @@ namespace ProcessMenu
 				if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); break; }
 
-				Serial.printf("[BT] Requesting PHY (tx:1M rx:2M) for %s...\n", describeHandle(selectedHandle).c_str());
-				if (auto opt = btMgr.Phy(selectedHandle.value(), BluetoothManager::PhyUpdate{ .txPhysMask = BLE_GAP_LE_PHY_1M_MASK, .rxPhysMask = BLE_GAP_LE_PHY_2M_MASK, .phyOptions = BLE_GAP_LE_PHY_CODED_ANY }))
-				{
-					const auto& [tx, rx] = *opt;
-					Serial.printf("[BT] PHY now tx=%u rx=%u\n", static_cast<unsigned>(tx), static_cast<unsigned>(rx));
-				}
-				else
-					Serial.println("[ERR] PHY update/read failed");
-
+				Serial.printf("[BT] Requesting PHY update (tx:1M rx:2M) for %s...\n", describeHandle(selectedHandle).c_str());
+				btMgr.Phy(selectedHandle.value(), BluetoothManager::PhyUpdate{ .txPhysMask = BLE_GAP_LE_PHY_1M_MASK, .rxPhysMask = BLE_GAP_LE_PHY_2M_MASK, .phyOptions = BLE_GAP_LE_PHY_CODED_ANY });
 				break;
 			}
 
@@ -328,22 +328,18 @@ namespace ProcessMenu
 			{
 				if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); break; }
-
-				using namespace std::chrono_literals;
-				Serial.printf("[BT] Requesting connection params for %s (interval 30-50ms, latency 0, timeout 4s)...\n", describeHandle(selectedHandle).c_str());
-				btMgr.UpdateConnectionParams(selectedHandle.value(), 30ms, 50ms, 0, 4s);
-				break;
+				Serial.println("[CFG] Enter conn params as: minMs maxMs latency timeoutMs (e.g. 30 50 0 4000): ");
+				consoleMode = ConsoleMode::SetConnParams;
+				return;
 			}
 
 			case 'P':
 			{
 				if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); break; }
 				if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); break; }
-
-				uint16_t rando = 0x001B + (esp_random() % (0x00FB - 0x001B + 1)); // 0x001B (27) to 0x00FB (251)
-				Serial.printf("[BT] Requesting data length %u for %s...\n", static_cast<unsigned>(rando), describeHandle(selectedHandle).c_str());
-				btMgr.RequestDataLength(selectedHandle.value(), rando);
-				break;
+				Serial.println("[CFG] Enter data length in octets (27-251): ");
+				consoleMode = ConsoleMode::SetDataLen;
+				return;
 			}
 
 			case 'Q':
@@ -354,13 +350,64 @@ namespace ProcessMenu
 				return; // skip printStatus until value is entered
 			}
 
+			case 'R':
+			{
+				int n = NimBLEDevice::getNumBonds();
+				if (n == 0) { Serial.println("[BOND] No bonds stored"); break; }
+				Serial.printf("[BOND] %d bond(s) stored:\n", n);
+				for (int i = 0; i < n; ++i)
+				{
+					NimBLEAddress addr = NimBLEDevice::getBondedAddress(i);
+					Serial.printf("[BOND]   [%d] %s\n", i, addr.toString().c_str());
+				}
+				break;
+			}
+
+			case 'S':
+			{
+				if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); break; }
+				if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); break; }
+				btMgr.DeleteBond(selectedHandle.value());
+				break;
+			}
+
+			case 'T':
+			{
+				if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); break; }
+				if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); break; }
+				int8_t rssi = btMgr.GetPeerRssi(selectedHandle.value());
+				if (rssi == INT8_MIN)
+					Serial.printf("[BT] RSSI unavailable for %s\n", describeHandle(selectedHandle).c_str());
+				else
+					Serial.printf("[BT] RSSI for %s: %d dBm\n", describeHandle(selectedHandle).c_str(), static_cast<int>(rssi));
+				break;
+			}
+
+			case 'U':
+			{
+				btMgr.DeleteAllBonds();
+				break;
+			}
+
+			case 'V':
+			{
+				Serial.printf("[CFG] Current advertising interval: %u ms\n", btMgr.AdvertisingInterval());
+				Serial.println("[CFG] Enter new interval in ms (20-10240, presets: 20 / 100 / 500 / 1285): ");
+				consoleMode = ConsoleMode::SetAdvInterval;
+				return; // skip printStatus until value is entered
+			}
+
 			case 'Y': printConfig(); break;
 
 			case 'Z': printConfigMenu(); break;
 
 			case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
 			{
-				if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); break; }
+				if (!btMgr.Server())
+				{
+					Serial.println("[ERR] Server uninitialized");
+					break;
+				}
 
 				auto connHandles = btMgr.Server()->getPeerDevices();
 				if (connHandles.empty()) { Serial.println("[BT] No connections - wait for a device to connect first"); break; }
@@ -431,7 +478,7 @@ namespace ProcessMenu
 			BluetoothManager::Event::Connect, [](const NimBLEConnInfo& connInfo)
 			{
 				reportPeerState(connInfo);
-				Serial.println("[HINT] Press 0 (or the connection index above) to select this connection.");
+				Serial.println("[HINT] Select an index to select a device.");
 			}
 		);
 		btMgr.SubscribeToEvent
@@ -452,6 +499,11 @@ namespace ProcessMenu
 				printStatus();
 			}
 		);
+	}
+
+	std::optional<uint16_t> GetSelectedHandle()
+	{
+		return selectedHandle;
 	}
 
 } // ProcessMenu

@@ -7,8 +7,17 @@
 #include <functional>
 #include <utility>
 #include <chrono>
-#include <cmath> // for std::lround
-#include <limits>
+#include <cmath>
+#include <algorithm>
+#include <climits>
+#include <freertos/FreeRTOS.h>
+#include <freertos/timers.h>
+
+#ifdef USING_NIMBLE_ARDUINO_HEADERS
+# include "nimble/nimble/host/include/host/ble_gap.h"
+#else
+# include "host/ble_gap.h"
+#endif
 
 namespace
 {
@@ -20,7 +29,8 @@ namespace
 
 	void notify(BluetoothManager::Event event, const NimBLEConnInfo& info, std::string_view tag = "BLE Event")
 	{
-		if (event >= BluetoothManager::Event::Count) return;
+		if (event >= BluetoothManager::Event::Count)
+			return;
 		auto idx = static_cast<size_t>(event);
 
 		ConnectionHandlers copy;
@@ -29,10 +39,11 @@ namespace
 			copy = subscriptions_[idx];
 		}
 
-		// invoke outside lock
+		// invoke outside of lock
 		for (const auto& h : copy)
 		{
-			if (!h) continue;
+			if (!h)
+				continue;
 			try { std::invoke(h, info); }
 			catch (const std::exception& e) { Serial.printf("%s subscriber threw: %s\n", tag.data(), e.what()); }
 			catch (...) { Serial.printf("%s subscriber threw unknown exception type\n", tag.data()); }
@@ -77,25 +88,32 @@ public:
 	{
 		Serial.println("[BT] Client connected");
 		notify(BluetoothManager::Event::Connect, connInfo);
+
+		if (/* mgr_.advertising_ &&  */mgr_.advertRestarting_)
+		{
+			// Delay restart 5s so the stack has time to clean up the connection
+			auto* timer = xTimerCreate("advRestart", pdMS_TO_TICKS(5000), pdFALSE, &mgr_, [](TimerHandle_t t)
+				{
+					auto* m = static_cast<BluetoothManager*>(pvTimerGetTimerID(t));
+					if (!m->advertising_ || !m->advertRestarting_)
+						return;
+				#if !CONFIG_BT_NIMBLE_EXT_ADV
+					bool ok = m->advertising_->start();
+				#else
+					bool ok = m->advertising_->start(0);
+				#endif
+					Serial.printf(ok ? "[BT] Advertising restarted as \"%s\"\n" : "[ERR] Failed to restart advertising\n", m->deviceName_.c_str());
+					xTimerDelete(t, 0);
+				});
+			if (timer)
+				xTimerStart(timer, 0);
+		}
 	}
 
 	void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override
 	{
 		Serial.printf("[BT] Client disconnected, reason:0x%x %s\n", reason, NimBLEUtils::returnCodeToString(reason));
 		notify(BluetoothManager::Event::Disconnect, connInfo);
-
-		if (mgr_.advertising_ && mgr_.advertRestarting_)
-		{
-		#if !CONFIG_BT_NIMBLE_EXT_ADV
-			bool advStarted = mgr_.advertising_->start();
-		#else
-			bool advStarted = mgr_.advertising_->start(0);
-		#endif
-
-			Serial.println(advStarted ? "[BT] Advertising restarted" : "[ERR] Failed to restart advertising");
-			if (advStarted)
-				Serial.println("[HINT] Waiting for a client to connect. Press Z to see the menu.");
-		}
 	}
 
 	void onMTUChange(uint16_t MTU, NimBLEConnInfo& connInfo) override
@@ -164,6 +182,11 @@ public:
 		notify(BluetoothManager::Event::AuthComplete, connInfo);
 	}
 
+	void onPhyUpdate(NimBLEConnInfo& connInfo, uint8_t txPhy, uint8_t rxPhy) override
+	{
+		Serial.printf("[BT] PHY updated for %s — tx:%u rx:%u\n", connInfo.getAddress().toString().c_str(), static_cast<unsigned>(txPhy), static_cast<unsigned>(rxPhy));
+	}
+
 private:
 	BluetoothManager& mgr_;
 }; // BluetoothManager::ServerCallbacks
@@ -214,7 +237,7 @@ void BluetoothManager::SubscribeToEvent(Event event, ConnectionHandler&& h)
 	subscriptions_[idx].push_back(std::move(h));
 }
 
-bool BluetoothManager::AdvertisingRestartOnDisconnect(std::optional<bool> enable) noexcept
+bool BluetoothManager::AdvertisingRestart(std::optional<bool> enable) noexcept
 {
 	if (enable.has_value())
 		advertRestarting_ = *enable;
@@ -223,67 +246,103 @@ bool BluetoothManager::AdvertisingRestartOnDisconnect(std::optional<bool> enable
 
 bool BluetoothManager::AdvertisingState(uint8_t instance, std::optional<bool> enable)
 {
+	if (!advertising_)
+		return false;
+
 #if !CONFIG_BT_NIMBLE_EXT_ADV
-	if (!advertising_) return false;
-	if (enable)
+	bool active = advertising_->isAdvertising();
+
+	if (enable.has_value())
 	{
-		if (*enable && !advertising_->isAdvertising())
+		bool desired = *enable;
+		if (active == desired)
+			return active;
+
+		if (desired)
 			advertising_->start();
-		else if (!*enable && advertising_->isAdvertising())
+		else
 			advertising_->stop();
+
+		if (desired)
+			Serial.printf("[BT] Advertising started as \"%s\" (enabled=%s)\n", deviceName_.c_str(), "true");
+		else
+			Serial.println("[BT] Advertising stopped (enabled=false)");
 	}
 
 	return advertising_->isAdvertising();
 #else
-	if (!advertising_) return false;
+	bool active = advertising_->isActive(instance);
+
 	if (enable.has_value())
 	{
 		bool desired = *enable;
-		if (advertising_->isActive(instance) == desired) return desired;
+		if (active == desired)
+			return active;
+
 		if (desired)
 			advertising_->start(instance);
 		else
 			advertising_->stop(instance);
+
+		if (desired)
+			Serial.printf("[BT] Advertising started as \"%s\" (enabled=%s)\n", deviceName_.c_str(), "true");
+		else
+			Serial.println("[BT] Advertising stopped (enabled=false)");
 	}
+
 	return advertising_->isActive(instance);
 #endif
 }
 
 uint16_t BluetoothManager::GetPeerMtu(uint16_t connHandle) noexcept
 {
-	if (!server_) return 0;
+	if (!server_)
+		return 0;
+
 	return server_->getPeerMTU(connHandle);
 }
 
 std::optional<BluetoothManager::PhyResult> BluetoothManager::Phy(uint16_t connHandle, std::optional<PhyUpdate> params) noexcept
 {
-	if (!server_) return std::nullopt;
+	if (!server_)
+		return std::nullopt;
 
 	if (params.has_value())
 	{
+		// updatePhy is async — result arrives via onPhyUpdate callback; just fire and check rc
 		const auto& p = *params;
 		bool ok = server_->updatePhy(connHandle, p.txPhysMask, p.rxPhysMask, p.phyOptions);
-		if (!ok) return std::nullopt;
+		if (!ok)
+		{
+			Serial.println("[ERR] PHY update request failed (may not be supported on this PHY/peer)");
+			return std::nullopt;
+		}
+		Serial.println("[BT] PHY update requested — result will follow via callback");
+		return std::nullopt; // result comes asynchronously
 	}
 
+	// Read-only: return current PHY
 	uint8_t txPhy = 0, rxPhy = 0;
 	if (!server_->getPhy(connHandle, &txPhy, &rxPhy))
+	{
+		Serial.println("[ERR] PHY read failed");
 		return std::nullopt;
-
+	}
 	return PhyResult{ txPhy, rxPhy };
 }
 
 void BluetoothManager::UpdateConnectionParams(uint16_t connHandle, std::chrono::milliseconds minIntervalMs, std::chrono::milliseconds maxIntervalMs, uint16_t latency, std::chrono::milliseconds supervisionTimeoutMs)
 {
-	if (!server_) return;
+	if (!server_)
+		return;
 
 	auto toIntervalUnits = [](std::chrono::milliseconds ms) -> uint16_t
 		{
 			auto msv = ms.count();
 			auto units = (static_cast<long long>(msv) * 4 + 2) / 5;
-			if (units < 0) units = 0;
-			if (units > static_cast<long long>(std::numeric_limits<uint16_t>::max()))
-				units = static_cast<long long>(std::numeric_limits<uint16_t>::max());
+			if (units < 0)
+				units = 0;
+			units = std::min(units, static_cast<long long>(std::numeric_limits<uint16_t>::max()));
 			return static_cast<uint16_t>(units);
 		};
 
@@ -291,9 +350,9 @@ void BluetoothManager::UpdateConnectionParams(uint16_t connHandle, std::chrono::
 		{
 			auto msv = ms.count();
 			auto units = (static_cast<long long>(msv) + 5) / 10;
-			if (units < 0) units = 0;
-			if (units > static_cast<long long>(std::numeric_limits<uint16_t>::max()))
-				units = static_cast<long long>(std::numeric_limits<uint16_t>::max());
+			if (units < 0)
+				units = 0;
+			units = std::min(units, static_cast<long long>(std::numeric_limits<uint16_t>::max()));
 			return static_cast<uint16_t>(units);
 		};
 
@@ -306,7 +365,8 @@ void BluetoothManager::UpdateConnectionParams(uint16_t connHandle, std::chrono::
 
 void BluetoothManager::RequestDataLength(uint16_t connHandle, uint16_t octets)
 {
-	if (!server_) return;
+	if (!server_)
+		return;
 
 	if (octets < 0x001B || octets > 0x00FB)
 	{
@@ -317,17 +377,111 @@ void BluetoothManager::RequestDataLength(uint16_t connHandle, uint16_t octets)
 	server_->setDataLen(connHandle, octets);
 }
 
+uint32_t BluetoothManager::AdvertisingInterval(std::optional<uint32_t> intervalMs) noexcept
+{
+	if (intervalMs.has_value())
+	{
+		uint32_t ms = *intervalMs;
+		// BLE spec: min 20 ms, max 10240 ms; clamp to a reasonable range
+		if (ms < 20)
+			ms = 20;
+		if (ms > 10240)
+			ms = 10240;
+		advIntervalMs_ = ms;
+
+		// Apply immediately if advertising is already running
+		if (advertising_)
+		{
+			uint16_t units = static_cast<uint16_t>((ms * 8 + 2) / 5); // round(ms / 0.625)
+		#if !CONFIG_BT_NIMBLE_EXT_ADV
+			bool wasOn = advertising_->isAdvertising();
+			if (wasOn)
+				advertising_->stop();
+			advertising_->setMinInterval(units);
+			advertising_->setMaxInterval(units);
+			if (wasOn)
+				advertising_->start();
+		#else
+			// Extended advertising: update interval on instance 0
+			bool wasOn = advertising_->isActive(0);
+			if (wasOn)
+				advertising_->stop(0);
+			NimBLEExtAdvertisement extAdv;
+			extAdv.setMinInterval(units);
+			extAdv.setMaxInterval(units);
+			advertising_->setInstanceData(0, extAdv);
+			if (wasOn)
+				advertising_->start(0);
+		#endif
+			Serial.printf("[BT] Advertising interval updated: %u ms (%u units)\n", ms, units);
+		}
+	}
+	return advIntervalMs_;
+}
+
+int8_t BluetoothManager::GetPeerRssi(uint16_t connHandle) noexcept
+{
+	int8_t rssi = 0;
+	int rc = ble_gap_conn_rssi(connHandle, &rssi);
+	if (rc != 0)
+	{
+		Serial.printf("[ERR] RSSI read failed, rc=0x%x\n", rc);
+		return INT8_MIN;
+	}
+	return rssi;
+}
+
+void BluetoothManager::DeleteBond(uint16_t connHandle)
+{
+	if (!server_)
+		return;
+
+	NimBLEConnInfo info = server_->getPeerInfoByHandle(connHandle);
+	NimBLEAddress addr = info.getIdAddress();
+	if (NimBLEDevice::deleteBond(addr))
+		Serial.printf("[BT] Bond deleted for %s\n", addr.toString().c_str());
+	else
+		Serial.printf("[ERR] No bond found to unpair for %s\n", addr.toString().c_str());
+}
+
+void BluetoothManager::DeleteAllBonds()
+{
+	int n = NimBLEDevice::getNumBonds();
+	if (n == 0)
+	{
+		Serial.println("[BT] No bonds stored");
+		return;
+	}
+
+	auto deleted = NimBLEDevice::deleteAllBonds();
+	if (deleted)
+		Serial.printf("[BT] Deleted %d bond(s)\n", deleted);
+	else
+		Serial.println("[ERR] Failed to delete bonds");
+}
+
 void BluetoothManager::SetupBluetooth()
 {
-	if (initialized_) return;
+	if (initialized_)
+		return;
+
 	initialized_ = true;
 	Serial.println("[BT] Initializing NimBLE...");
 
+	// Init with the plain device name, then build the MAC-suffixed name for advertising only.
+	// getAddress() is valid after init(); store the NimBLEAddress to keep getVal() pointer alive.
 #if !CONFIG_BT_NIMBLE_EXT_ADV
-	NimBLEDevice::init("ESP-Wroom");
+	constexpr const char* mode = "Legacy";
 #else
-	NimBLEDevice::init("ESP-C3");
+	constexpr const char* mode = "Modern";
 #endif
+
+	NimBLEDevice::init(mode);
+	NimBLEAddress addr = NimBLEDevice::getAddress();
+	const uint8_t* mac = addr.getVal();
+	char buf[24];
+	snprintf(buf, sizeof(buf), "%s-%02X%02X", mode, mac[1], mac[0]);
+	deviceName_ = buf;
 
 	// Configure security
 	Capabilities(capabilities_);
@@ -347,12 +501,30 @@ void BluetoothManager::SetupBluetooth()
 	// Advertising
 #if !CONFIG_BT_NIMBLE_EXT_ADV
 	advertising_ = NimBLEDevice::getAdvertising();
-	advertising_->setName("ESP-LegacyAdv"); // complete name
+	advertising_->setName(deviceName_.c_str());
 	advertising_->addTxPower();
 	advertising_->addServiceUUID(SERVICE_UUID);
+	// Manufacturer-specific data: company ID 0xFFFF (test/internal) + "BeBo" payload
+	{
+		uint8_t mfr[] = { 0xFF, 0xFF, 'B', 'e', 'B', 'o' };
+		advertising_->setManufacturerData(std::string(reinterpret_cast<char*>(mfr), sizeof(mfr)));
+	}
 	advertising_->enableScanResponse(true);
+	{
+		// NimBLE legacy adv PDU is at most 31 bytes; log the payload size for awareness
+		NimBLEAdvertisementData advData = advertising_->getAdvertisementData();
+		Serial.printf("[BT] Adv payload size: %u / 31 bytes\n", static_cast<unsigned>(advData.getPayload().size()));
+	}
+	// Apply advertising interval (convert ms to BLE units of 0.625 ms)
+	{
+		uint32_t ms = advIntervalMs_.load();
+		uint16_t units = static_cast<uint16_t>((ms * 8 + 2) / 5); // round(ms / 0.625)
+		advertising_->setMinInterval(units);
+		advertising_->setMaxInterval(units);
+		Serial.printf("[BT] Advertising interval: %u ms (%u units)\n", ms, units);
+	}
 	if (advertising_->start())
-		Serial.println("[BT] Advertising started");
+		Serial.printf("[BT] Advertising started as \"%s\"\n", deviceName_.c_str());
 	else
 		Serial.println("[ERR] Failed to start advertising");
 #else
@@ -363,7 +535,13 @@ void BluetoothManager::SetupBluetooth()
 	NimBLEExtAdvertisement extAdvMent(primaryPhy, secondaryPhy);
 	extAdvMent.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
 	extAdvMent.setConnectable(true);
-	extAdvMent.setName("ExtAdv");
+	extAdvMent.setName(deviceName_.c_str());
+	// Manufacturer-specific data: company ID 0xFFFF (test/internal) + "BeBo" payload
+	{
+		uint8_t mfr[] = { 0xFF, 0xFF, 'B', 'e', 'B', 'o' };
+		extAdvMent.setManufacturerData(std::string(reinterpret_cast<char*>(mfr), sizeof(mfr)));
+	}
+	Serial.printf("[BT] Ext adv payload size: %u bytes\n", static_cast<unsigned>(extAdvMent.getDataSize()));
 	/** As per Bluetooth specification, extended advertising cannot be both scannable and connectable */
 	// extAdvMent.setScannable(false); // The default is false, set here for demonstration.
 	/** Extended advertising allows for 251 bytes (minus header bytes ~20) in a single advertisement or up to 1650 if chained */
@@ -385,7 +563,7 @@ void BluetoothManager::SetupBluetooth()
 	if (advertising_->setInstanceData(0, extAdvMent))
 	{
 		if (advertising_->start(0))
-			Serial.println("[BT] Advertising started");
+			Serial.printf("[BT] Advertising started as \"%s\"\n", deviceName_.c_str());
 		else
 			Serial.println("[ERR] Failed to start advertising");
 	}

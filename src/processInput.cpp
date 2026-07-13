@@ -2,9 +2,11 @@
 #include <Arduino.h>
 #include "processInput.h"
 #include "processMenu.h"
+#include "bluetoothManager.h"
 #include <NimBLEDevice.h>
-#include <cctype>       // isspace, isprint, isdigit, toupper
-#include <cstddef>      // size_t
+#include <cctype>
+#include <cstddef>
+#include <chrono>
 
 namespace ProcessInput
 {
@@ -13,10 +15,10 @@ namespace ProcessInput
 	std::atomic<bool> confirmReady{false};
 	std::atomic<bool> confirmAccept{false};
 
-	constexpr size_t SINGLE_LEN = 1;
-	constexpr size_t PASSKEY_LEN = 6;
-	constexpr size_t MAX_BUF_LEN = 64;
-	static char buf[MAX_BUF_LEN + 1];
+	constexpr size_t SINGLE_LEN   = 1;
+	constexpr size_t PASSKEY_LEN  = 6;
+	constexpr size_t MAX_BUF_LEN  = 64;
+	static char   buf[MAX_BUF_LEN + 1];
 	static size_t buf_len = 0;
 
 	static inline bool purgeSerialLine()
@@ -27,127 +29,165 @@ namespace ProcessInput
 			int rv = Serial.read();
 			if (rv < 0) break;
 			dropped = true;
-			char d = static_cast<char>(rv);
-			if (d == '\n') break;
+			if (static_cast<char>(rv) == '\n') break;
 		}
 		return dropped;
-	} // purgeSerialLine
+	}
 
-	void processBufferedLine(const char *s, size_t len)
+	void processBufferedLine(const char* s, size_t len)
 	{
-		// trim leading
+		// trim leading/trailing whitespace
 		size_t start = 0;
-		while (start < len && isspace((unsigned char)s[start]))
-			++start;
-
-		// trim trailing
+		while (start < len && isspace((unsigned char)s[start])) ++start;
 		size_t end = len;
-		while (end > start && isspace((unsigned char)s[end - 1]))
-			--end;
-
+		while (end > start && isspace((unsigned char)s[end - 1])) --end;
 		size_t trimmedLen = end - start;
 
 		ConsoleMode curMode = ProcessMenu::consoleMode;
 
+		// --- Passkey ---
 		if (curMode == ConsoleMode::Passkey)
 		{
-			if (trimmedLen == 0)
+			if (trimmedLen == 0 || trimmedLen > PASSKEY_LEN)
 			{
 				passkeyReady = false;
-				Serial.println("[PAIR] No passkey provided");
+				Serial.println(trimmedLen == 0 ? "[PAIR] No passkey provided" : "[ERR] Invalid passkey format");
 				return;
 			}
-
-			if (trimmedLen > PASSKEY_LEN)
-			{
-				passkeyReady = false;
-				Serial.println("[ERR] Invalid passkey format (digits only)");
-				return;
-			}
-
-			// check digits and parse
 			unsigned long pk = 0;
 			for (size_t i = 0; i < trimmedLen; ++i)
 			{
 				char ch = s[start + i];
-				if (ch < '0' || ch > '9')
-				{
-					passkeyReady = false;
-					Serial.println("[ERR] Invalid passkey format (digits only)");
-					return;
-				}
+				if (ch < '0' || ch > '9') { passkeyReady = false; Serial.println("[ERR] Passkey digits only"); return; }
 				pk = pk * 10 + (unsigned long)(ch - '0');
-				if (pk > 999999UL)
-					break;
 			}
-
-			if (pk <= 999999UL)
-			{
-				passkeyValue = static_cast<uint32_t>(pk);
-				passkeyReady = true;
-			}
-			else
-			{
-				passkeyReady = false;
-				Serial.println("[ERR] Invalid passkey format (0..999999 expected)");
-			}
-
+			if (pk > 999999UL) { passkeyReady = false; Serial.println("[ERR] Passkey 0-999999"); return; }
+			passkeyValue = static_cast<uint32_t>(pk);
+			passkeyReady = true;
 			return;
 		}
 
+		// --- Pin confirm ---
 		if (curMode == ConsoleMode::PinConfirm)
 		{
-			if (trimmedLen > 0)
-			{
-				char first = s[start];
-				confirmAccept = (first == 'y' || first == 'Y');
-			}
-			else
-				confirmAccept = false;
-
-			confirmReady = true;
+			confirmAccept = (trimmedLen > 0 && (s[start] == 'y' || s[start] == 'Y'));
+			confirmReady  = true;
 			return;
 		}
 
+		// --- Set MTU ---
 		if (curMode == ConsoleMode::SetMtu)
 		{
-			if (trimmedLen == 0)
-			{
-				Serial.println("[ERR] No value entered, MTU unchanged");
-				ProcessMenu::consoleMode = ConsoleMode::Config;
-				return;
-			}
-
-			unsigned long mtu = 0;
-			bool valid = true;
+			ProcessMenu::consoleMode = ConsoleMode::Config;
+			if (trimmedLen == 0) { Serial.println("[ERR] No value, MTU unchanged"); return; }
+			unsigned long mtu = 0; bool valid = true;
 			for (size_t i = 0; i < trimmedLen; ++i)
 			{
 				char ch = s[start + i];
 				if (ch < '0' || ch > '9') { valid = false; break; }
 				mtu = mtu * 10 + (unsigned long)(ch - '0');
 			}
-
 			if (!valid || mtu < 23 || mtu > 517)
-			{
-				Serial.println("[ERR] Invalid MTU (must be 23-517), MTU unchanged");
-			}
+				Serial.println("[ERR] MTU must be 23-517");
 			else
 			{
 				NimBLEDevice::setMTU(static_cast<uint16_t>(mtu));
-				Serial.printf("[CFG] Local MTU set to %lu bytes (takes effect on next connection)\n", mtu);
+				Serial.printf("[CFG] Local MTU set to %lu (takes effect on next connection)\n", mtu);
 			}
+			return;
+		}
 
+		// --- Set adv interval ---
+		if (curMode == ConsoleMode::SetAdvInterval)
+		{
 			ProcessMenu::consoleMode = ConsoleMode::Config;
+			if (trimmedLen == 0) { Serial.println("[ERR] No value, interval unchanged"); return; }
+			unsigned long ms = 0; bool valid = true;
+			for (size_t i = 0; i < trimmedLen; ++i)
+			{
+				char ch = s[start + i];
+				if (ch < '0' || ch > '9') { valid = false; break; }
+				ms = ms * 10 + (unsigned long)(ch - '0');
+			}
+			if (!valid || ms < 20 || ms > 10240)
+				Serial.println("[ERR] Interval must be 20-10240 ms");
+			else
+				BluetoothManager::Instance().AdvertisingInterval(static_cast<uint32_t>(ms));
+			return;
+		}
+
+		// --- Set conn params ---
+		if (curMode == ConsoleMode::SetConnParams)
+		{
+			ProcessMenu::consoleMode = ConsoleMode::Config;
+			if (trimmedLen == 0) { Serial.println("[ERR] No input, params unchanged"); return; }
+
+			unsigned long minMs = 0, maxMs = 0, latency = 0, timeoutMs = 0;
+			const char* p = s + start;
+			const char* e = s + end;
+			auto parseNext = [&](unsigned long& out) -> bool {
+				while (p < e && (*p == ' ' || *p == '\t')) ++p;
+				if (p >= e || *p < '0' || *p > '9') return false;
+				out = 0;
+				while (p < e && *p >= '0' && *p <= '9') out = out * 10 + (*p++ - '0');
+				return true;
+			};
+			if (!parseNext(minMs) || !parseNext(maxMs) || !parseNext(latency) || !parseNext(timeoutMs))
+			{
+				Serial.println("[ERR] Expected: minMs maxMs latency timeoutMs");
+				return;
+			}
+			if (minMs < 8 || maxMs < minMs || maxMs > 4000 || timeoutMs < 100 || timeoutMs > 32000)
+			{
+				Serial.println("[ERR] Range: minMs>=8, maxMs<=4000, minMs<=maxMs, timeoutMs 100-32000");
+				return;
+			}
+			auto handle = ProcessMenu::GetSelectedHandle();
+			if (!handle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
+			Serial.printf("[BT] Conn params: min=%lums max=%lums latency=%lu timeout=%lums\n", minMs, maxMs, latency, timeoutMs);
+			BluetoothManager::Instance().UpdateConnectionParams(
+				handle.value(),
+				std::chrono::milliseconds(minMs),
+				std::chrono::milliseconds(maxMs),
+				static_cast<uint16_t>(latency),
+				std::chrono::milliseconds(timeoutMs));
+			return;
+		}
+
+		// --- Set data length ---
+		if (curMode == ConsoleMode::SetDataLen)
+		{
+			ProcessMenu::consoleMode = ConsoleMode::Config;
+			if (trimmedLen == 0) { Serial.println("[ERR] No input, data length unchanged"); return; }
+			unsigned long octets = 0; bool valid = true;
+			for (size_t i = 0; i < trimmedLen; ++i)
+			{
+				char ch = s[start + i];
+				if (ch < '0' || ch > '9') { valid = false; break; }
+				octets = octets * 10 + (unsigned long)(ch - '0');
+			}
+			if (!valid || octets < 27 || octets > 251)
+			{
+				Serial.println("[ERR] Data length must be 27-251");
+				return;
+			}
+			auto handle = ProcessMenu::GetSelectedHandle();
+			if (!handle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
+			Serial.printf("[BT] Requesting data length %lu\n", octets);
+			BluetoothManager::Instance().RequestDataLength(handle.value(), static_cast<uint16_t>(octets));
 			return;
 		}
 	} // processBufferedLine
+
 
 	void handlePairingInput()
 	{
 		static ConsoleMode prevMode = ConsoleMode::Uninitialized;
 
 		ConsoleMode curMode = ProcessMenu::consoleMode;
-		if (curMode != ConsoleMode::Passkey && curMode != ConsoleMode::PinConfirm && curMode != ConsoleMode::SetMtu)
+		if (curMode != ConsoleMode::Passkey      && curMode != ConsoleMode::PinConfirm
+		 && curMode != ConsoleMode::SetMtu        && curMode != ConsoleMode::SetAdvInterval
+		 && curMode != ConsoleMode::SetConnParams && curMode != ConsoleMode::SetDataLen)
 			return;
 
 		if (prevMode != ConsoleMode::Uninitialized && prevMode != curMode && buf_len > 0)
@@ -166,7 +206,7 @@ namespace ProcessInput
 			char c = static_cast<char>(rv);
 			if (c == '\r') continue;
 
-			if (rv == 8 || rv == 127) // backspace (BS=8) or DEL (127)
+			if (rv == 8 || rv == 127) // backspace / DEL
 			{
 				if (buf_len > 0)
 				{
@@ -179,7 +219,7 @@ namespace ProcessInput
 				continue;
 			}
 
-			if (c == '\n') // terminate on newline -> submit
+			if (c == '\n')
 			{
 				Serial.println();
 				processBufferedLine(buf, buf_len);
@@ -199,9 +239,10 @@ namespace ProcessInput
 					return;
 				}
 
-				size_t limit = (curMode == ConsoleMode::Passkey) ? PASSKEY_LEN
-				             : (curMode == ConsoleMode::SetMtu)   ? MAX_BUF_LEN  // wait for Enter
-				             :                                       SINGLE_LEN;
+				// Passkey: auto-submit at 6 chars; PinConfirm: auto-submit at 1 char; all others: wait for Enter
+				size_t limit = (curMode == ConsoleMode::Passkey)    ? PASSKEY_LEN
+				             : (curMode == ConsoleMode::PinConfirm) ? SINGLE_LEN
+				             :                                         MAX_BUF_LEN;
 				if (buf_len < limit)
 				{
 					buf[buf_len++] = c;
@@ -219,4 +260,5 @@ namespace ProcessInput
 			}
 		}
 	} // handlePairingInput
+
 } // namespace ProcessInput

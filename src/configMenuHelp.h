@@ -16,24 +16,24 @@ namespace ConfigMenuHelp
 	{
 		switch (enc & (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK))
 		{
-			case 0x00: return "✗ LTK / ✗ IRK / ✗ CSRK / ✗ LINK";
-			case BLE_SM_PAIR_KEY_DIST_ENC: return "✓ LTK / ✗ IRK / ✗ CSRK / ✗ LINK";
-			case BLE_SM_PAIR_KEY_DIST_ID: return "✗ LTK / ✓ IRK / ✗ CSRK / ✗ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID): return "✓ LTK / ✓ IRK / ✗ CSRK / ✗ LINK";
-			case BLE_SM_PAIR_KEY_DIST_SIGN: return "✗ LTK / ✗ IRK / ✓ CSRK / ✗ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_SIGN): return "✓ LTK / ✗ IRK / ✓ CSRK / ✗ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "✗ LTK / ✓ IRK / ✓ CSRK / ✗ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "✓ LTK / ✓ IRK / ✓ CSRK / ✗ LINK";
-			case BLE_SM_PAIR_KEY_DIST_LINK: return "✗ LTK / ✗ IRK / ✗ CSRK / ✓ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_LINK): return "✓ LTK / ✗ IRK / ✗ CSRK / ✓ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_LINK): return "✗ LTK / ✓ IRK / ✗ CSRK / ✓ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_LINK): return "✓ LTK / ✓ IRK / ✗ CSRK / ✓ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "✗ LTK / ✗ IRK / ✓ CSRK / ✓ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "✓ LTK / ✗ IRK / ✓ CSRK / ✓ LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "✗ LTK / ✓ IRK / ✓ CSRK / ✓ LINK";
+			case 0x00: return "[ ] LTK / [ ] IRK / [ ] CSRK / [ ] LINK";
+			case BLE_SM_PAIR_KEY_DIST_ENC: return "[X] LTK / [ ] IRK / [ ] CSRK / [ ] LINK";
+			case BLE_SM_PAIR_KEY_DIST_ID: return "[ ] LTK / [X] IRK / [ ] CSRK / [ ] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID): return "[X] LTK / [X] IRK / [ ] CSRK / [ ] LINK";
+			case BLE_SM_PAIR_KEY_DIST_SIGN: return "[ ] LTK / [ ] IRK / [X] CSRK / [ ] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_SIGN): return "[X] LTK / [ ] IRK / [X] CSRK / [ ] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "[ ] LTK / [X] IRK / [X] CSRK / [ ] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "[X] LTK / [X] IRK / [X] CSRK / [ ] LINK";
+			case BLE_SM_PAIR_KEY_DIST_LINK: return "[ ] LTK / [ ] IRK / [ ] CSRK / [X] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_LINK): return "[X] LTK / [ ] IRK / [ ] CSRK / [X] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_LINK): return "[ ] LTK / [X] IRK / [ ] CSRK / [X] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_LINK): return "[X] LTK / [X] IRK / [ ] CSRK / [X] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "[ ] LTK / [ ] IRK / [X] CSRK / [X] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "[X] LTK / [ ] IRK / [X] CSRK / [X] LINK";
+			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "[ ] LTK / [X] IRK / [X] CSRK / [X] LINK";
 			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK):
-				return "✓ LTK / ✓ IRK / ✓ CSRK / ✓ LINK";
-			default: return "✗ LTK / ✗ IRK / ✗ CSRK / ✗ LINK";
+				return "[X] LTK / [X] IRK / [X] CSRK / [X] LINK";
+			default: return "[ ] LTK / [ ] IRK / [ ] CSRK / [ ] LINK";
 		}
 	}
 
@@ -72,24 +72,24 @@ namespace ConfigMenuHelp
 	{
 		switch (auth & (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_KEYPRESS))
 		{
-			case 0x00: return "✗ Bonding / ✗ MitM / ✗ Sec Conn / ✗ Keypress";
-			case BLE_SM_PAIR_AUTHREQ_BOND: return "✓ Bonding / ✗ MitM / ✗ Sec Conn / ✗ Keypress";
-			case BLE_SM_PAIR_AUTHREQ_MITM: return "✗ Bonding / ✓ MITM / ✗ Sec Conn / ✗ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM): return "✓ Bonding / ✓ MITM / ✗ Sec Conn / ✗ Keypress";
-			case BLE_SM_PAIR_AUTHREQ_SC: return "✗ Bonding / ✗ MitM / ✓ Sec Conn / ✗ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_BOND): return "✓ Bonding / ✗ MitM / ✓ Sec Conn / ✗ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM): return "✗ Bonding / ✓ MitM / ✓ Sec Conn / ✗ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND): return "✓ Bonding / ✓ MitM / ✓ Sec Conn / ✗ Keypress";
-			case BLE_SM_PAIR_AUTHREQ_KEYPRESS: return "✗ Bonding / ✗ MitM / ✗ Sec Conn / ✓ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_BOND): return "✓ Bonding / ✗ MitM / ✗ Sec Conn / ✓ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_MITM): return "✗ Bonding / ✓ MITM / ✗ Sec Conn / ✓ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND): return "✓ Bonding / ✓ MITM / ✗ Sec Conn / ✓ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC): return "✗ Bonding / ✗ MitM / ✓ Sec Conn / ✓ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_BOND): return "✓ Bonding / ✗ MitM / ✓ Sec Conn / ✓ Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM): return "✗ Bonding / ✓ MitM / ✓ Sec Conn / ✓ Keypress";
+			case 0x00: return "[ ] Bonding / [ ] MitM / [ ] Sec Conn / [ ] Keypress";
+			case BLE_SM_PAIR_AUTHREQ_BOND: return "[X] Bonding / [ ] MitM / [ ] Sec Conn / [ ] Keypress";
+			case BLE_SM_PAIR_AUTHREQ_MITM: return "[ ] Bonding / [X] MITM / [ ] Sec Conn / [ ] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM): return "[X] Bonding / [X] MITM / [ ] Sec Conn / [ ] Keypress";
+			case BLE_SM_PAIR_AUTHREQ_SC: return "[ ] Bonding / [ ] MitM / [X] Sec Conn / [ ] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [ ] MitM / [X] Sec Conn / [ ] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM): return "[ ] Bonding / [X] MitM / [X] Sec Conn / [ ] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [X] MitM / [X] Sec Conn / [ ] Keypress";
+			case BLE_SM_PAIR_AUTHREQ_KEYPRESS: return "[ ] Bonding / [ ] MitM / [ ] Sec Conn / [X] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [ ] MitM / [ ] Sec Conn / [X] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_MITM): return "[ ] Bonding / [X] MITM / [ ] Sec Conn / [X] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [X] MITM / [ ] Sec Conn / [X] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC): return "[ ] Bonding / [ ] MitM / [X] Sec Conn / [X] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [ ] MitM / [X] Sec Conn / [X] Keypress";
+			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM): return "[ ] Bonding / [X] MitM / [X] Sec Conn / [X] Keypress";
 			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND):
-				return "✓ Bonding / ✓ MitM / ✓ Sec Conn / ✓ Keypress";
-			default: return "✗ Bonding / ✗ MitM / ✗ Sec Conn / ✗ Keypress";
+				return "[X] Bonding / [X] MitM / [X] Sec Conn / [X] Keypress";
+			default: return "[ ] Bonding / [ ] MitM / [ ] Sec Conn / [ ] Keypress";
 		}
 	}
 
