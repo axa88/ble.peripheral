@@ -523,6 +523,9 @@ void BluetoothManager::SetupBluetooth()
 		advertising_->setMaxInterval(units);
 		Serial.printf("[BT] Advertising interval: %u ms (%u units)\n", ms, units);
 	}
+
+	advertising_->setDiscoverableMode(BLE_GAP_DISC_MODE_LTD); // default General discoverable
+
 	if (advertising_->start())
 		Serial.printf("[BT] Advertising started as \"%s\"\n", deviceName_.c_str());
 	else
@@ -552,7 +555,14 @@ void BluetoothManager::SetupBluetooth()
 																	"or up to 1650 bytes with chaining.\r\n"
 																	"This example message is 226 bytes long "
 																	"and is using CODED_PHY for long range."));
-		*/
+	*/
+
+	// this needs to have advertising impement a timer to stop advertising after a certain time, otherwise its not "limited" is it...
+	// Limited Discoverable + BR/EDR Not Supported
+	//extAdvMent.setFlags(BLE_HS_ADV_F_DISC_LTD | BLE_HS_ADV_F_BREDR_UNSUP);
+
+	// General Discoverable
+	extAdvMent.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
 
 	advertising_ = NimBLEDevice::getAdvertising();
 	advertising_->setCallbacks(new AdvertisingCallbacks(*this));
