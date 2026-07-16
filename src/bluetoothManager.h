@@ -1,6 +1,7 @@
 // BluetoothManager.h
 #pragma once
 #include <NimBLEDevice.h>
+#include "advertising.h"
 #include <mutex>
 #include <functional>
 #include <vector>
@@ -29,8 +30,12 @@ public:
 	uint8_t Encryption(std::optional<uint8_t> encryption = std::nullopt) noexcept;
 
 	bool AdvertisingRestart(std::optional<bool> enable = std::nullopt) noexcept;
+	// Advertising instance management now delegates to the Advertising:: module (advertising.h/.cpp).
+	// These wrappers exist for callers (processMenu.cpp) that don't need the full InstanceConfig API.
 	bool AdvertisingState(uint8_t instance, std::optional<bool> enable = std::nullopt);
-	uint32_t AdvertisingInterval(std::optional<uint32_t> intervalMs = std::nullopt) noexcept;
+	uint32_t AdvertisingInterval(uint8_t instance, std::optional<uint32_t> intervalMs = std::nullopt) noexcept;
+	DiscoverableMode AdvertisingDiscoverable(uint8_t instance, std::optional<DiscoverableMode> mode = std::nullopt) noexcept;
+	bool AdvertisingConnectable(uint8_t instance, std::optional<bool> connectable = std::nullopt) noexcept;
 	const std::string& AdvertisingName() const noexcept { return deviceName_; }
 
 	uint16_t GetPeerMtu(uint16_t connHandle) noexcept;
@@ -65,7 +70,8 @@ private:
 	std::atomic<uint8_t> capabilities_{ BLE_HS_IO_KEYBOARD_DISPLAY };
 	std::atomic<uint8_t> authentication_{ BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND };
 	std::atomic<uint8_t> encryption_{ BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_ENC };
-	std::atomic<uint32_t> advIntervalMs_{ 100 };
+	// Per-instance advertising config (name, discoverable mode, connectable, interval, etc.)
+	// now lives in the Advertising:: module - see advertising.h/.cpp.
 
 	// forward declarations
 	class ServerCallbacks;

@@ -3,6 +3,7 @@
 #include "processInput.h"
 #include "processMenu.h"
 #include "bluetoothManager.h"
+#include "advertising.h"
 #include <NimBLEDevice.h>
 #include <cctype>
 #include <cstddef>
@@ -112,7 +113,7 @@ namespace ProcessInput
 			if (!valid || ms < 20 || ms > 10240)
 				Serial.println("[ERR] Interval must be 20-10240 ms");
 			else
-				BluetoothManager::Instance().AdvertisingInterval(static_cast<uint32_t>(ms));
+				BluetoothManager::Instance().AdvertisingInterval(ProcessMenu::SelectedAdvInstance(), static_cast<uint32_t>(ms));
 			return;
 		}
 
@@ -177,6 +178,39 @@ namespace ProcessInput
 			BluetoothManager::Instance().RequestDataLength(handle.value(), static_cast<uint16_t>(octets));
 			return;
 		}
+
+		// --- Add advertising instance (ext-adv builds only) ---
+		if (curMode == ConsoleMode::AddAdvInstance)
+		{
+			ProcessMenu::consoleMode = ConsoleMode::Config;
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+			Serial.println("[ERR] Additional advertising instances require extended advertising (ext-adv build)");
+			return;
+#else
+			if (trimmedLen == 0) { Serial.println("[ERR] No input, instance not added"); return; }
+
+			const char* p = s + start;
+			const char* e = s + end;
+			while (p < e && (*p == ' ' || *p == '\t')) ++p;
+			if (p >= e || *p < '0' || *p > '9') { Serial.println("[ERR] Expected: id name"); return; }
+			unsigned long id = 0;
+			while (p < e && *p >= '0' && *p <= '9') id = id * 10 + (*p++ - '0');
+			if (id == 0 || id > 255) { Serial.println("[ERR] Instance id must be 1-255 (0 is reserved)"); return; }
+			while (p < e && (*p == ' ' || *p == '\t')) ++p;
+			if (p >= e) { Serial.println("[ERR] Expected: id name"); return; }
+			std::string name(p, e);
+
+			Advertising::InstanceConfig cfg;
+			cfg.id = static_cast<uint8_t>(id);
+			cfg.name = name;
+			cfg.discoverable = DiscoverableMode::General;
+			cfg.connectable = true;
+			cfg.intervalMs = 100;
+
+			Advertising::AddInstance(cfg);
+			return;
+#endif
+		}
 	} // processBufferedLine
 
 
@@ -187,7 +221,8 @@ namespace ProcessInput
 		ConsoleMode curMode = ProcessMenu::consoleMode;
 		if (curMode != ConsoleMode::Passkey      && curMode != ConsoleMode::PinConfirm
 		 && curMode != ConsoleMode::SetMtu        && curMode != ConsoleMode::SetAdvInterval
-		 && curMode != ConsoleMode::SetConnParams && curMode != ConsoleMode::SetDataLen)
+		 && curMode != ConsoleMode::SetConnParams && curMode != ConsoleMode::SetDataLen
+		 && curMode != ConsoleMode::AddAdvInstance)
 			return;
 
 		if (prevMode != ConsoleMode::Uninitialized && prevMode != curMode && buf_len > 0)

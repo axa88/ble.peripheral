@@ -2,6 +2,7 @@
 // #include <Arduino.h>
 #include "processMenu.h"
 #include "bluetoothManager.h"
+#include "advertising.h"
 #include "configMenuHelp.h"
 #include <Arduino.h>    // Serial, millis(), etc.
 #include <optional>     // std::optional
@@ -10,11 +11,13 @@
 #include <cctype>       // toupper
 #include <cstdint>      // uint16_t, uint32_t
 #include <string>       // std::string
+#include <vector>       // std::vector
 #include <random>
 
 namespace
 {
 	static std::optional<uint16_t> selectedHandle;
+	static std::atomic<uint8_t> selectedAdvInstance{0};
 
 	// Returns a short "address (handle N)" string for the given handle, or "none" if unavailable.
 	std::string describeHandle(std::optional<uint16_t> handle)
@@ -62,8 +65,14 @@ namespace
 	void printStatus()
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		bool advOn = btMgr.AdvertisingState(0);
-		Serial.printf("[STATUS] Advertising:%s | Selected:%s\n", advOn ? "on" : "off", describeHandle(selectedHandle).c_str());
+		uint8_t sel = selectedAdvInstance.load();
+		bool advOn = btMgr.AdvertisingState(sel);
+		DiscoverableMode mode = btMgr.AdvertisingDiscoverable(sel);
+		auto discStr = Advertising::discModeToString(mode);
+		Serial.printf("[STATUS] AdvInstance:%u Advertising:%s Discoverable:%.*s | Selected peer:%s\n",
+			sel, advOn ? "on" : "off",
+			static_cast<int>(discStr.size()), discStr.data(),
+			describeHandle(selectedHandle).c_str());
 	}
 
 	void printConfig()
@@ -75,7 +84,29 @@ namespace
 		Serial.println("[CFG] === Peripheral");
 		Serial.printf( "[CFG]     Address:        %s\n", NimBLEDevice::toString().c_str());
 		Serial.printf( "[CFG]     Adv name:       %s\n", btMgr.AdvertisingName().c_str());
-		Serial.printf( "[CFG]     Advertising:    %s\n", btMgr.AdvertisingState(0) ? "on" : "off");
+		Serial.println("[CFG]     --- Advertising Instances ---");
+		{
+			uint8_t sel = selectedAdvInstance.load();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+			auto ids = Advertising::ListInstances();
+#else
+			std::vector<uint8_t> ids{ 0 };
+#endif
+			for (uint8_t id : ids)
+			{
+				auto cfg = Advertising::GetConfig(id);
+				if (!cfg.has_value())
+					continue;
+				auto discStr = Advertising::discModeToString(cfg->discoverable);
+				Serial.printf("[CFG]     [%u]%s name=\"%s\" state=%s disc=%.*s connectable=%s interval=%ums\n",
+					id, (id == sel) ? " <-- selected" : "",
+					cfg->name.c_str(),
+					btMgr.AdvertisingState(id) ? "on" : "off",
+					static_cast<int>(discStr.size()), discStr.data(),
+					cfg->connectable ? "yes" : "no",
+					cfg->intervalMs);
+			}
+		}
 		Serial.println("[CFG]     --- Security ---");
 		std::string_view caps = ConfigMenuHelp::capIoToString(btMgr.Capabilities());
 		Serial.printf( "[CFG]     capabilities:   %.*s\n", static_cast<int>(caps.size()), caps.data());
@@ -183,8 +214,15 @@ namespace ProcessMenu
 		Serial.println("[MENU]");
 		Serial.println("[MENU] Advertising:");
 		Serial.println("[MENU]   K --> Toggle Advert Restart on Disconnect");
-		Serial.println("[MENU]   L --> Toggle Advertising");
-		Serial.println("[MENU]   V --> Set Advertising Interval");
+		Serial.println("[MENU]   L --> Toggle Advertising (selected instance)");
+		Serial.println("[MENU]   V --> Set Advertising Interval (selected instance)");
+		Serial.println("[MENU]   W --> Toggle Discoverable Mode Limited/General (selected instance)");
+		Serial.println("[MENU]   X --> Toggle Connectable (selected instance)");
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		Serial.println("[MENU]   [ --> Select advertising instance");
+		Serial.println("[MENU]   ] --> Add new advertising instance");
+		Serial.println("[MENU]   \\ --> Remove selected advertising instance");
+#endif
 		Serial.println("[MENU]");
 		Serial.println("[MENU] Peer (requires a selected connection):");
 		Serial.println("[MENU]   M --> Read peer MTU");
@@ -301,7 +339,8 @@ namespace ProcessMenu
 			}
 			case 'L':
 			{
-				Serial.printf("[CFG] advertising: %s\n", btMgr.AdvertisingState((0), !btMgr.AdvertisingState(0)) ? "on" : "off");
+				uint8_t inst = selectedAdvInstance.load();
+				Serial.printf("[CFG] advertising[%u]: %s\n", inst, btMgr.AdvertisingState(inst, !btMgr.AdvertisingState(inst)) ? "on" : "off");
 				break;
 			}
 
@@ -391,11 +430,60 @@ namespace ProcessMenu
 
 			case 'V':
 			{
-				Serial.printf("[CFG] Current advertising interval: %u ms\n", btMgr.AdvertisingInterval());
+				uint8_t inst = selectedAdvInstance.load();
+				Serial.printf("[CFG] Current advertising interval[%u]: %u ms\n", inst, btMgr.AdvertisingInterval(inst));
 				Serial.println("[CFG] Enter new interval in ms (20-10240, presets: 20 / 100 / 500 / 1285): ");
 				consoleMode = ConsoleMode::SetAdvInterval;
 				return; // skip printStatus until value is entered
 			}
+
+			case 'W':
+			{
+				uint8_t inst = selectedAdvInstance.load();
+				DiscoverableMode newMode = Advertising::discModeToggle(btMgr.AdvertisingDiscoverable(inst));
+				auto discStr = Advertising::discModeToString(btMgr.AdvertisingDiscoverable(inst, newMode));
+				Serial.printf("[CFG] discoverable[%u]: %.*s\n", inst, static_cast<int>(discStr.size()), discStr.data());
+				break;
+			}
+
+			case 'X':
+			{
+				uint8_t inst = selectedAdvInstance.load();
+				bool newState = !btMgr.AdvertisingConnectable(inst);
+				Serial.printf("[CFG] connectable[%u]: %s\n", inst, btMgr.AdvertisingConnectable(inst, newState) ? "yes" : "no");
+				break;
+			}
+
+#if CONFIG_BT_NIMBLE_EXT_ADV
+			case '[':
+			{
+				auto ids = Advertising::ListInstances();
+				if (ids.empty()) { Serial.println("[ERR] No advertising instances"); break; }
+
+				uint8_t cur = selectedAdvInstance.load();
+				auto it = std::find(ids.begin(), ids.end(), cur);
+				size_t nextIdx = (it == ids.end()) ? 0 : ((static_cast<size_t>(it - ids.begin()) + 1) % ids.size());
+				selectedAdvInstance = ids[nextIdx];
+				Serial.printf("[CFG] Selected advertising instance: %u\n", selectedAdvInstance.load());
+				break;
+			}
+
+			case ']':
+			{
+				Serial.println("[CFG] Enter new instance as: id name (e.g. 1 MySensor): ");
+				consoleMode = ConsoleMode::AddAdvInstance;
+				return; // skip printStatus until value is entered
+			}
+
+			case '\\':
+			{
+				uint8_t inst = selectedAdvInstance.load();
+				if (inst == 0) { Serial.println("[ERR] Instance 0 cannot be removed"); break; }
+				if (Advertising::RemoveInstance(inst))
+					selectedAdvInstance = 0;
+				break;
+			}
+#endif
 
 			case 'Y': printConfig(); break;
 
@@ -504,6 +592,15 @@ namespace ProcessMenu
 	std::optional<uint16_t> GetSelectedHandle()
 	{
 		return selectedHandle;
+	}
+
+	uint8_t SelectedAdvInstance()
+	{
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		return selectedAdvInstance.load();
+#else
+		return 0;
+#endif
 	}
 
 } // ProcessMenu

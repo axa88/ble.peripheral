@@ -89,19 +89,15 @@ public:
 		Serial.println("[BT] Client connected");
 		notify(BluetoothManager::Event::Connect, connInfo);
 
-		if (/* mgr_.advertising_ &&  */mgr_.advertRestarting_)
+		if (mgr_.advertRestarting_)
 		{
 			// Delay restart 5s so the stack has time to clean up the connection
 			auto* timer = xTimerCreate("advRestart", pdMS_TO_TICKS(5000), pdFALSE, &mgr_, [](TimerHandle_t t)
 				{
 					auto* m = static_cast<BluetoothManager*>(pvTimerGetTimerID(t));
-					if (!m->advertising_ || !m->advertRestarting_)
+					if (!m->advertRestarting_)
 						return;
-				#if !CONFIG_BT_NIMBLE_EXT_ADV
-					bool ok = m->advertising_->start();
-				#else
-					bool ok = m->advertising_->start(0);
-				#endif
+					bool ok = Advertising::Start(0);
 					Serial.printf(ok ? "[BT] Advertising restarted as \"%s\"\n" : "[ERR] Failed to restart advertising\n", m->deviceName_.c_str());
 					xTimerDelete(t, 0);
 				});
@@ -246,52 +242,14 @@ bool BluetoothManager::AdvertisingRestart(std::optional<bool> enable) noexcept
 
 bool BluetoothManager::AdvertisingState(uint8_t instance, std::optional<bool> enable)
 {
-	if (!advertising_)
-		return false;
+	if (!enable.has_value())
+		return Advertising::IsActive(instance);
 
-#if !CONFIG_BT_NIMBLE_EXT_ADV
-	bool active = advertising_->isAdvertising();
+	bool desired = *enable;
+	if (Advertising::IsActive(instance) == desired)
+		return desired;
 
-	if (enable.has_value())
-	{
-		bool desired = *enable;
-		if (active == desired)
-			return active;
-
-		if (desired)
-			advertising_->start();
-		else
-			advertising_->stop();
-
-		if (desired)
-			Serial.printf("[BT] Advertising started as \"%s\" (enabled=%s)\n", deviceName_.c_str(), "true");
-		else
-			Serial.println("[BT] Advertising stopped (enabled=false)");
-	}
-
-	return advertising_->isAdvertising();
-#else
-	bool active = advertising_->isActive(instance);
-
-	if (enable.has_value())
-	{
-		bool desired = *enable;
-		if (active == desired)
-			return active;
-
-		if (desired)
-			advertising_->start(instance);
-		else
-			advertising_->stop(instance);
-
-		if (desired)
-			Serial.printf("[BT] Advertising started as \"%s\" (enabled=%s)\n", deviceName_.c_str(), "true");
-		else
-			Serial.println("[BT] Advertising stopped (enabled=false)");
-	}
-
-	return advertising_->isActive(instance);
-#endif
+	return desired ? Advertising::Start(instance) : Advertising::Stop(instance);
 }
 
 uint16_t BluetoothManager::GetPeerMtu(uint16_t connHandle) noexcept
@@ -377,8 +335,12 @@ void BluetoothManager::RequestDataLength(uint16_t connHandle, uint16_t octets)
 	server_->setDataLen(connHandle, octets);
 }
 
-uint32_t BluetoothManager::AdvertisingInterval(std::optional<uint32_t> intervalMs) noexcept
+uint32_t BluetoothManager::AdvertisingInterval(uint8_t instance, std::optional<uint32_t> intervalMs) noexcept
 {
+	auto cfg = Advertising::GetConfig(instance);
+	if (!cfg.has_value())
+		return 0;
+
 	if (intervalMs.has_value())
 	{
 		uint32_t ms = *intervalMs;
@@ -387,36 +349,20 @@ uint32_t BluetoothManager::AdvertisingInterval(std::optional<uint32_t> intervalM
 			ms = 20;
 		if (ms > 10240)
 			ms = 10240;
-		advIntervalMs_ = ms;
-
-		// Apply immediately if advertising is already running
-		if (advertising_)
-		{
-			uint16_t units = static_cast<uint16_t>((ms * 8 + 2) / 5); // round(ms / 0.625)
-		#if !CONFIG_BT_NIMBLE_EXT_ADV
-			bool wasOn = advertising_->isAdvertising();
-			if (wasOn)
-				advertising_->stop();
-			advertising_->setMinInterval(units);
-			advertising_->setMaxInterval(units);
-			if (wasOn)
-				advertising_->start();
-		#else
-			// Extended advertising: update interval on instance 0
-			bool wasOn = advertising_->isActive(0);
-			if (wasOn)
-				advertising_->stop(0);
-			NimBLEExtAdvertisement extAdv;
-			extAdv.setMinInterval(units);
-			extAdv.setMaxInterval(units);
-			advertising_->setInstanceData(0, extAdv);
-			if (wasOn)
-				advertising_->start(0);
-		#endif
-			Serial.printf("[BT] Advertising interval updated: %u ms (%u units)\n", ms, units);
-		}
+		cfg->intervalMs = ms;
+		Advertising::ApplyConfig(*cfg);
 	}
-	return advIntervalMs_;
+	return cfg->intervalMs;
+}
+
+DiscoverableMode BluetoothManager::AdvertisingDiscoverable(uint8_t instance, std::optional<DiscoverableMode> mode) noexcept
+{
+	return Advertising::Discoverable(instance, mode);
+}
+
+bool BluetoothManager::AdvertisingConnectable(uint8_t instance, std::optional<bool> connectable) noexcept
+{
+	return Advertising::Connectable(instance, connectable);
 }
 
 int8_t BluetoothManager::GetPeerRssi(uint16_t connHandle) noexcept
@@ -498,88 +444,37 @@ void BluetoothManager::SetupBluetooth()
 	characteristic_->setValue("Ima Characteristic");
 	server_->start();
 
-	// Advertising
-#if !CONFIG_BT_NIMBLE_EXT_ADV
+	// Advertising - instance 0 setup delegated to the Advertising:: module (advertising.h/.cpp),
+	// which owns the full instance config and is the single place that rebuilds/applies
+	// advertisement data (fixes the previous setInstanceData() partial-replace issue).
 	advertising_ = NimBLEDevice::getAdvertising();
-	advertising_->setName(deviceName_.c_str());
-	advertising_->addTxPower();
-	advertising_->addServiceUUID(SERVICE_UUID);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	advertising_->setCallbacks(new AdvertisingCallbacks(*this));
+#else
+	// Legacy API has no NimBLEExtAdvertisingCallbacks equivalent; setAdvertisingCompleteCallback
+	// is the only stop-notification hook it offers, and unlike onStopped() it does NOT report a
+	// reason code, so this fires identically for a timeout (e.g. Limited mode expiring), a manual
+	// stop(), or a client connecting. Good enough to know "advertising is no longer active."
+	advertising_->setAdvertisingCompleteCallback([this](NimBLEAdvertising*)
+		{
+			Serial.println("[BT] Advertising stopped (instance 0)");
+		});
+#endif
+
+	Advertising::InstanceConfig instance0;
+	instance0.id = 0;
+	instance0.name = deviceName_;
+	instance0.discoverable = DiscoverableMode::General;
+	instance0.connectable = true;
+	instance0.intervalMs = 100;
+	instance0.serviceUuid = SERVICE_UUID;
 	// Manufacturer-specific data: company ID 0xFFFF (test/internal) + "BeBo" payload
-	{
-		uint8_t mfr[] = { 0xFF, 0xFF, 'B', 'e', 'B', 'o' };
-		advertising_->setManufacturerData(std::string(reinterpret_cast<char*>(mfr), sizeof(mfr)));
-	}
-	advertising_->enableScanResponse(true);
-	{
-		// NimBLE legacy adv PDU is at most 31 bytes; log the payload size for awareness
-		NimBLEAdvertisementData advData = advertising_->getAdvertisementData();
-		Serial.printf("[BT] Adv payload size: %u / 31 bytes\n", static_cast<unsigned>(advData.getPayload().size()));
-	}
-	// Apply advertising interval (convert ms to BLE units of 0.625 ms)
-	{
-		uint32_t ms = advIntervalMs_.load();
-		uint16_t units = static_cast<uint16_t>((ms * 8 + 2) / 5); // round(ms / 0.625)
-		advertising_->setMinInterval(units);
-		advertising_->setMaxInterval(units);
-		Serial.printf("[BT] Advertising interval: %u ms (%u units)\n", ms, units);
-	}
+	instance0.manufacturerData = { 0xFF, 0xFF, 'B', 'e', 'B', 'o' };
 
-	advertising_->setDiscoverableMode(BLE_GAP_DISC_MODE_LTD); // default General discoverable
+	Advertising::Setup(instance0);
 
-	if (advertising_->start())
+	if (Advertising::Start(0))
 		Serial.printf("[BT] Advertising started as \"%s\"\n", deviceName_.c_str());
 	else
 		Serial.println("[ERR] Failed to start advertising");
-#else
-	uint8_t primaryPhy = BLE_HCI_LE_PHY_1M; /** for advertising, can be one of BLE_HCI_LE_PHY_1M or BLE_HCI_LE_PHY_CODED */
-	uint8_t secondaryPhy = BLE_HCI_LE_PHY_1M; /** for advertising/connecting, can be one of BLE_HCI_LE_PHY_1M, BLE_HCI_LE_PHY_2M or BLE_HCI_LE_PHY_CODED */
-
-	// Create an extended advertisement with the instance ID 0 and set the PHY's. Multiple instances can be added as long as the instance ID is incremented.
-	NimBLEExtAdvertisement extAdvMent(primaryPhy, secondaryPhy);
-	extAdvMent.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-	extAdvMent.setConnectable(true);
-	extAdvMent.setName(deviceName_.c_str());
-	// Manufacturer-specific data: company ID 0xFFFF (test/internal) + "BeBo" payload
-	{
-		uint8_t mfr[] = { 0xFF, 0xFF, 'B', 'e', 'B', 'o' };
-		extAdvMent.setManufacturerData(std::string(reinterpret_cast<char*>(mfr), sizeof(mfr)));
-	}
-	Serial.printf("[BT] Ext adv payload size: %u bytes\n", static_cast<unsigned>(extAdvMent.getDataSize()));
-	/** As per Bluetooth specification, extended advertising cannot be both scannable and connectable */
-	// extAdvMent.setScannable(false); // The default is false, set here for demonstration.
-	/** Extended advertising allows for 251 bytes (minus header bytes ~20) in a single advertisement or up to 1650 if chained */
-	// extAdvMent.setServiceData(NimBLEUUID(SERVICE_UUID), std::string("test"));
-	/* 	extAdvMent.setServiceData(NimBLEUUID(SERVICE_UUID), std::string("Extended Advertising Demo.\r\n"
-																	"Extended advertising allows for "
-																	"251 bytes of data in a single advertisement,\r\n"
-																	"or up to 1650 bytes with chaining.\r\n"
-																	"This example message is 226 bytes long "
-																	"and is using CODED_PHY for long range."));
-	*/
-
-	// this needs to have advertising impement a timer to stop advertising after a certain time, otherwise its not "limited" is it...
-	// Limited Discoverable + BR/EDR Not Supported
-	//extAdvMent.setFlags(BLE_HS_ADV_F_DISC_LTD | BLE_HS_ADV_F_BREDR_UNSUP);
-
-	// General Discoverable
-	extAdvMent.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-
-	advertising_ = NimBLEDevice::getAdvertising();
-	advertising_->setCallbacks(new AdvertisingCallbacks(*this));
-
-	// NimBLEExtAdvertising::setInstanceData takes the instance ID and a reference to a `NimBLEExtAdvertisement` object.
-	// This sets the data that will be advertised for this instance ID, returns true if successful.
-	// Note: It is safe to create the advertisement as a local variable if setInstanceData is called before exiting the code block as the data will be copied.
-	if (advertising_->setInstanceData(0, extAdvMent))
-	{
-		if (advertising_->start(0))
-			Serial.printf("[BT] Advertising started as \"%s\"\n", deviceName_.c_str());
-		else
-			Serial.println("[ERR] Failed to start advertising");
-	}
-	else
-		Serial.println("[ERR] Failed to register advertisement data");
-
-	Serial.printf("[BT] isAdvertising(): %s\n", advertising_->isAdvertising() ? "true" : "false");
-#endif
 } // SetupBluetooth
