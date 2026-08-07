@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <cstddef>
 
-enum class ConsoleMode { Uninitialized, Config, ConfigSub, Passkey, PinConfirm, SetMtu, SetAdvInterval, SetConnParams, SetDataLen, AddAdvInstance, SelectBondTarget, SelectAdvInstance };
+enum class ConsoleMode { Uninitialized, Config, Passkey, PinConfirm, SetMtu, SetAdvInterval, SetConnParams, SetDataLen, AddAdvInstance, SelectBondTarget, SelectAdvInstance };
 
 namespace ProcessMenu
 {
