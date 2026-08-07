@@ -40,7 +40,6 @@ void loop()
 	{
 	#endif
 		ProcessMenu::handleConfigInput();
-		ProcessMenu::handleConfigInputSub();
 		ProcessInput::handlePairingInput();
 	#if ARDUINO_USB_CDC_ON_BOOT
 	}

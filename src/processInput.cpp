@@ -126,7 +126,8 @@ namespace ProcessInput
 			unsigned long minMs = 0, maxMs = 0, latency = 0, timeoutMs = 0;
 			const char* p = s + start;
 			const char* e = s + end;
-			auto parseNext = [&](unsigned long& out) -> bool {
+			auto parseNext = [&](unsigned long& out) -> bool
+			{
 				while (p < e && (*p == ' ' || *p == '\t')) ++p;
 				if (p >= e || *p < '0' || *p > '9') return false;
 				out = 0;
@@ -146,12 +147,7 @@ namespace ProcessInput
 			auto handle = ProcessMenu::GetSelectedHandle();
 			if (!handle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
 			Serial.printf("[BT] Conn params: min=%lums max=%lums latency=%lu timeout=%lums\n", minMs, maxMs, latency, timeoutMs);
-			BluetoothManager::Instance().UpdateConnectionParams(
-				handle.value(),
-				std::chrono::milliseconds(minMs),
-				std::chrono::milliseconds(maxMs),
-				static_cast<uint16_t>(latency),
-				std::chrono::milliseconds(timeoutMs));
+			BluetoothManager::Instance().UpdateConnectionParams(handle.value(), std::chrono::milliseconds(minMs), std::chrono::milliseconds(maxMs), static_cast<uint16_t>(latency),	std::chrono::milliseconds(timeoutMs));
 			return;
 		}
 
@@ -195,7 +191,7 @@ namespace ProcessInput
 			if (p >= e || *p < '0' || *p > '9') { Serial.println("[ERR] Expected: id name"); return; }
 			unsigned long id = 0;
 			while (p < e && *p >= '0' && *p <= '9') id = id * 10 + (*p++ - '0');
-			if (id == 0 || id > 255) { Serial.println("[ERR] Instance id must be 1-255 (0 is reserved)"); return; }
+			if (id == 0 || id >= CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES) { Serial.printf("[ERR] Instance id must be from 1 to %u\n", CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES - 1); return;}
 			while (p < e && (*p == ' ' || *p == '\t')) ++p;
 			if (p >= e) { Serial.println("[ERR] Expected: id name"); return; }
 			std::string name(p, e);
@@ -204,12 +200,44 @@ namespace ProcessInput
 			cfg.id = static_cast<uint8_t>(id);
 			cfg.name = name;
 			cfg.discoverable = DiscoverableMode::General;
-			cfg.connectable = true;
+			cfg.mode = Advertising::defaultMode();
 			cfg.intervalMs = 100;
 
 			Advertising::AddInstance(cfg);
 			return;
 #endif
+		}
+
+		// --- Select directed-advertising bond target ---
+		if (curMode == ConsoleMode::SelectBondTarget)
+		{
+			ProcessMenu::consoleMode = ConsoleMode::Config;
+			if (trimmedLen == 0) { Serial.println("[ERR] No bond selected"); return; }
+			unsigned long index = 0;
+			for (size_t i = 0; i < trimmedLen; ++i)
+			{
+				char ch = s[start + i];
+				if (ch < '0' || ch > '9') { Serial.println("[ERR] Bond index must be numeric"); return; }
+				index = index * 10 + static_cast<unsigned long>(ch - '0');
+			}
+			ProcessMenu::SelectBondTarget(static_cast<size_t>(index));
+			return;
+		}
+
+		// --- Select advertising instance ---
+		if (curMode == ConsoleMode::SelectAdvInstance)
+		{
+			ProcessMenu::consoleMode = ConsoleMode::Config;
+			if (trimmedLen == 0) { Serial.println("[ERR] No advertising instance selected"); return; }
+			unsigned long index = 0;
+			for (size_t i = 0; i < trimmedLen; ++i)
+			{
+				char ch = s[start + i];
+				if (ch < '0' || ch > '9') { Serial.println("[ERR] Advertising instance id must be numeric"); return; }
+				index = index * 10 + static_cast<unsigned long>(ch - '0');
+			}
+			ProcessMenu::SelectAdvInstance(static_cast<size_t>(index));
+			return;
 		}
 	} // processBufferedLine
 
@@ -219,10 +247,9 @@ namespace ProcessInput
 		static ConsoleMode prevMode = ConsoleMode::Uninitialized;
 
 		ConsoleMode curMode = ProcessMenu::consoleMode;
-		if (curMode != ConsoleMode::Passkey      && curMode != ConsoleMode::PinConfirm
-		 && curMode != ConsoleMode::SetMtu        && curMode != ConsoleMode::SetAdvInterval
-		 && curMode != ConsoleMode::SetConnParams && curMode != ConsoleMode::SetDataLen
-		 && curMode != ConsoleMode::AddAdvInstance)
+		if (curMode != ConsoleMode::Passkey && curMode != ConsoleMode::PinConfirm && curMode != ConsoleMode::SetMtu
+			&& curMode != ConsoleMode::SetAdvInterval && curMode != ConsoleMode::SetConnParams && curMode != ConsoleMode::SetDataLen
+			&& curMode != ConsoleMode::AddAdvInstance && curMode != ConsoleMode::SelectBondTarget && curMode != ConsoleMode::SelectAdvInstance)
 			return;
 
 		if (prevMode != ConsoleMode::Uninitialized && prevMode != curMode && buf_len > 0)
@@ -275,9 +302,7 @@ namespace ProcessInput
 				}
 
 				// Passkey: auto-submit at 6 chars; PinConfirm: auto-submit at 1 char; all others: wait for Enter
-				size_t limit = (curMode == ConsoleMode::Passkey)    ? PASSKEY_LEN
-				             : (curMode == ConsoleMode::PinConfirm) ? SINGLE_LEN
-				             :                                         MAX_BUF_LEN;
+				size_t limit = (curMode == ConsoleMode::Passkey) ? PASSKEY_LEN : (curMode == ConsoleMode::PinConfirm) ? SINGLE_LEN : MAX_BUF_LEN;
 				if (buf_len < limit)
 				{
 					buf[buf_len++] = c;

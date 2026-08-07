@@ -29,13 +29,11 @@ public:
 	uint8_t Authentication(std::optional<uint8_t> authentication = std::nullopt) noexcept;
 	uint8_t Encryption(std::optional<uint8_t> encryption = std::nullopt) noexcept;
 
-	bool AdvertisingRestart(std::optional<bool> enable = std::nullopt) noexcept;
 	// Advertising instance management now delegates to the Advertising:: module (advertising.h/.cpp).
 	// These wrappers exist for callers (processMenu.cpp) that don't need the full InstanceConfig API.
 	bool AdvertisingState(uint8_t instance, std::optional<bool> enable = std::nullopt);
 	uint32_t AdvertisingInterval(uint8_t instance, std::optional<uint32_t> intervalMs = std::nullopt) noexcept;
 	DiscoverableMode AdvertisingDiscoverable(uint8_t instance, std::optional<DiscoverableMode> mode = std::nullopt) noexcept;
-	bool AdvertisingConnectable(uint8_t instance, std::optional<bool> connectable = std::nullopt) noexcept;
 	const std::string& AdvertisingName() const noexcept { return deviceName_; }
 
 	uint16_t GetPeerMtu(uint16_t connHandle) noexcept;
@@ -82,5 +80,4 @@ private:
 #else
 	NimBLEExtAdvertising* advertising_ = nullptr;
 #endif
-	std::atomic<bool> advertRestarting_{ true };
 };

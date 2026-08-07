@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <climits>
 #include <freertos/FreeRTOS.h>
-#include <freertos/timers.h>
 
 #ifdef USING_NIMBLE_ARDUINO_HEADERS
 # include "nimble/nimble/host/include/host/ble_gap.h"
@@ -23,6 +22,8 @@ namespace
 {
 	using LockGuard = std::lock_guard<std::mutex>;
 	using ConnectionHandlers = std::vector<BluetoothManager::ConnectionHandler>;
+	constexpr uint8_t supportedAuthenticationMask = BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_SC;
+	constexpr uint8_t supportedEncryptionMask = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN;
 
 	std::array<ConnectionHandlers, static_cast<size_t>(BluetoothManager::Event::Count)> subscriptions_;
 	std::array<std::mutex, static_cast<size_t>(BluetoothManager::Event::Count)> subscriptionMutex_;
@@ -60,6 +61,7 @@ public:
 
 	void onStopped(NimBLEExtAdvertising* pAdv, int reason, uint8_t instId) override
 	{
+		Advertising::OnAdvertisingStopped(instId, reason);
 		Serial.printf("[BT] Advertising stopped (instance %u), reason:0x%x %s\n", instId, reason, NimBLEUtils::returnCodeToString(reason));
 		switch (reason) // seems there are only 2 posibilities, timeout and connect
 		{
@@ -86,24 +88,13 @@ public:
 
 	void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override
 	{
+		bool directedConnection = Advertising::OnConnectionEstablished();
 		Serial.println("[BT] Client connected");
 		notify(BluetoothManager::Event::Connect, connInfo);
-
-		if (mgr_.advertRestarting_)
-		{
-			// Delay restart 5s so the stack has time to clean up the connection
-			auto* timer = xTimerCreate("advRestart", pdMS_TO_TICKS(5000), pdFALSE, &mgr_, [](TimerHandle_t t)
-				{
-					auto* m = static_cast<BluetoothManager*>(pvTimerGetTimerID(t));
-					if (!m->advertRestarting_)
-						return;
-					bool ok = Advertising::Start(0);
-					Serial.printf(ok ? "[BT] Advertising restarted as \"%s\"\n" : "[ERR] Failed to restart advertising\n", m->deviceName_.c_str());
-					xTimerDelete(t, 0);
-				});
-			if (timer)
-				xTimerStart(timer, 0);
-		}
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+		if (!directedConnection)
+			Advertising::RequestRestartAfterConnection(0);
+#endif
 	}
 
 	void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override
@@ -210,7 +201,7 @@ uint8_t BluetoothManager::Capabilities(std::optional<uint8_t> capabilities) noex
 uint8_t BluetoothManager::Authentication(std::optional<uint8_t> authentication) noexcept
 {
 	if (authentication.has_value())
-		NimBLEDevice::setSecurityAuth(authentication_ = *authentication);
+		NimBLEDevice::setSecurityAuth(authentication_ = static_cast<uint8_t>(*authentication & supportedAuthenticationMask));
 	return authentication_;
 }
 
@@ -218,7 +209,7 @@ uint8_t BluetoothManager::Encryption(std::optional<uint8_t> encryption) noexcept
 {
 	if (encryption.has_value())
 	{
-		NimBLEDevice::setSecurityRespKey(encryption_ = *encryption);
+		NimBLEDevice::setSecurityRespKey(encryption_ = static_cast<uint8_t>(*encryption & supportedEncryptionMask));
 		NimBLEDevice::setSecurityInitKey(encryption_);
 	}
 	return encryption_;
@@ -233,13 +224,6 @@ void BluetoothManager::SubscribeToEvent(Event event, ConnectionHandler&& h)
 	subscriptions_[idx].push_back(std::move(h));
 }
 
-bool BluetoothManager::AdvertisingRestart(std::optional<bool> enable) noexcept
-{
-	if (enable.has_value())
-		advertRestarting_ = *enable;
-	return advertRestarting_;
-}
-
 bool BluetoothManager::AdvertisingState(uint8_t instance, std::optional<bool> enable)
 {
 	if (!enable.has_value())
@@ -248,6 +232,8 @@ bool BluetoothManager::AdvertisingState(uint8_t instance, std::optional<bool> en
 	bool desired = *enable;
 	if (Advertising::IsActive(instance) == desired)
 		return desired;
+
+	Advertising::CancelRestartAfterConnection(instance);
 
 	return desired ? Advertising::Start(instance) : Advertising::Stop(instance);
 }
@@ -360,11 +346,6 @@ DiscoverableMode BluetoothManager::AdvertisingDiscoverable(uint8_t instance, std
 	return Advertising::Discoverable(instance, mode);
 }
 
-bool BluetoothManager::AdvertisingConnectable(uint8_t instance, std::optional<bool> connectable) noexcept
-{
-	return Advertising::Connectable(instance, connectable);
-}
-
 int8_t BluetoothManager::GetPeerRssi(uint16_t connHandle) noexcept
 {
 	int8_t rssi = 0;
@@ -403,7 +384,7 @@ void BluetoothManager::DeleteAllBonds()
 	if (deleted)
 		Serial.printf("[BT] Deleted %d bond(s)\n", deleted);
 	else
-		Serial.println("[ERR] Failed to delete bonds");
+		Serial.println("[ERR] Failed to delete bonds, verify all scanning is stopped and no connections are active");
 }
 
 void BluetoothManager::SetupBluetooth()
@@ -452,9 +433,7 @@ void BluetoothManager::SetupBluetooth()
 	advertising_->setCallbacks(new AdvertisingCallbacks(*this));
 #else
 	// Legacy API has no NimBLEExtAdvertisingCallbacks equivalent; setAdvertisingCompleteCallback
-	// is the only stop-notification hook it offers, and unlike onStopped() it does NOT report a
-	// reason code, so this fires identically for a timeout (e.g. Limited mode expiring), a manual
-	// stop(), or a client connecting. Good enough to know "advertising is no longer active."
+	// does not report a reason code. Connection handling therefore remains in onConnect.
 	advertising_->setAdvertisingCompleteCallback([this](NimBLEAdvertising*)
 		{
 			Serial.println("[BT] Advertising stopped (instance 0)");
@@ -465,7 +444,7 @@ void BluetoothManager::SetupBluetooth()
 	instance0.id = 0;
 	instance0.name = deviceName_;
 	instance0.discoverable = DiscoverableMode::General;
-	instance0.connectable = true;
+	instance0.mode = Advertising::defaultMode();
 	instance0.intervalMs = 100;
 	instance0.serviceUuid = SERVICE_UUID;
 	// Manufacturer-specific data: company ID 0xFFFF (test/internal) + "BeBo" payload

@@ -10,30 +10,20 @@ namespace ConfigMenuHelp
 	inline constexpr uint8_t encToggleLTK(uint8_t ltk) noexcept { return static_cast<uint8_t>(ltk ^ BLE_SM_PAIR_KEY_DIST_ENC); }
 	inline constexpr uint8_t encToggleIRK(uint8_t irk) noexcept { return static_cast<uint8_t>(irk ^ BLE_SM_PAIR_KEY_DIST_ID); }
 	inline constexpr uint8_t encToggleCSRK(uint8_t csrk) noexcept { return static_cast<uint8_t>(csrk ^ BLE_SM_PAIR_KEY_DIST_SIGN); }
-	inline constexpr uint8_t encToggleLK(uint8_t dualLinkKey) noexcept { return static_cast<uint8_t>(dualLinkKey ^ BLE_SM_PAIR_KEY_DIST_LINK); }
 
 	inline constexpr std::string_view encToString(uint8_t enc) noexcept
 	{
-		switch (enc & (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK))
+		switch (enc & (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN))
 		{
-			case 0x00: return "[ ] LTK / [ ] IRK / [ ] CSRK / [ ] LINK";
-			case BLE_SM_PAIR_KEY_DIST_ENC: return "[X] LTK / [ ] IRK / [ ] CSRK / [ ] LINK";
-			case BLE_SM_PAIR_KEY_DIST_ID: return "[ ] LTK / [X] IRK / [ ] CSRK / [ ] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID): return "[X] LTK / [X] IRK / [ ] CSRK / [ ] LINK";
-			case BLE_SM_PAIR_KEY_DIST_SIGN: return "[ ] LTK / [ ] IRK / [X] CSRK / [ ] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_SIGN): return "[X] LTK / [ ] IRK / [X] CSRK / [ ] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "[ ] LTK / [X] IRK / [X] CSRK / [ ] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "[X] LTK / [X] IRK / [X] CSRK / [ ] LINK";
-			case BLE_SM_PAIR_KEY_DIST_LINK: return "[ ] LTK / [ ] IRK / [ ] CSRK / [X] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_LINK): return "[X] LTK / [ ] IRK / [ ] CSRK / [X] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_LINK): return "[ ] LTK / [X] IRK / [ ] CSRK / [X] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_LINK): return "[X] LTK / [X] IRK / [ ] CSRK / [X] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "[ ] LTK / [ ] IRK / [X] CSRK / [X] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "[X] LTK / [ ] IRK / [X] CSRK / [X] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK): return "[ ] LTK / [X] IRK / [X] CSRK / [X] LINK";
-			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_LINK):
-				return "[X] LTK / [X] IRK / [X] CSRK / [X] LINK";
-			default: return "[ ] LTK / [ ] IRK / [ ] CSRK / [ ] LINK";
+			case 0x00: return "LTK [ ] | IRK [ ] | CSRK [ ]";
+			case BLE_SM_PAIR_KEY_DIST_ENC: return "LTK [X] | IRK [ ] | CSRK [ ]";
+			case BLE_SM_PAIR_KEY_DIST_ID: return "LTK [ ] | IRK [X] | CSRK [ ]";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID): return "LTK [X] | IRK [X] | CSRK [ ]";
+			case BLE_SM_PAIR_KEY_DIST_SIGN: return "LTK [ ] | IRK [ ] | CSRK [X]";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_SIGN): return "LTK [X] | IRK [ ] | CSRK [X]";
+			case (BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "LTK [ ] | IRK [X] | CSRK [X]";
+			case (BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN): return "LTK [X] | IRK [X] | CSRK [X]";
+			default: return "LTK [ ] | IRK [ ] | CSRK [ ]";
 		}
 	}
 
@@ -66,34 +56,23 @@ namespace ConfigMenuHelp
 	inline constexpr uint8_t authToggleBond(uint8_t bond) noexcept { return static_cast<uint8_t>(bond ^ BLE_SM_PAIR_AUTHREQ_BOND); }
 	inline constexpr uint8_t authToggleMitm(uint8_t mitm) noexcept { return static_cast<uint8_t>(mitm ^ BLE_SM_PAIR_AUTHREQ_MITM); }
 	inline constexpr uint8_t authToggleSC(uint8_t sc) noexcept { return static_cast<uint8_t>(sc ^ BLE_SM_PAIR_AUTHREQ_SC); }
-	inline constexpr uint8_t authToggleKP(uint8_t kp) noexcept { return static_cast<uint8_t>(kp ^ BLE_SM_PAIR_AUTHREQ_KEYPRESS); }
 
 	inline constexpr std::string_view authToString(uint8_t auth) noexcept
 	{
-		switch (auth & (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_KEYPRESS))
+		switch (auth & (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_SC))
 		{
-			case 0x00: return "[ ] Bonding / [ ] MitM / [ ] Sec Conn / [ ] Keypress";
-			case BLE_SM_PAIR_AUTHREQ_BOND: return "[X] Bonding / [ ] MitM / [ ] Sec Conn / [ ] Keypress";
-			case BLE_SM_PAIR_AUTHREQ_MITM: return "[ ] Bonding / [X] MITM / [ ] Sec Conn / [ ] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM): return "[X] Bonding / [X] MITM / [ ] Sec Conn / [ ] Keypress";
-			case BLE_SM_PAIR_AUTHREQ_SC: return "[ ] Bonding / [ ] MitM / [X] Sec Conn / [ ] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [ ] MitM / [X] Sec Conn / [ ] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM): return "[ ] Bonding / [X] MitM / [X] Sec Conn / [ ] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [X] MitM / [X] Sec Conn / [ ] Keypress";
-			case BLE_SM_PAIR_AUTHREQ_KEYPRESS: return "[ ] Bonding / [ ] MitM / [ ] Sec Conn / [X] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [ ] MitM / [ ] Sec Conn / [X] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_MITM): return "[ ] Bonding / [X] MITM / [ ] Sec Conn / [X] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [X] MITM / [ ] Sec Conn / [X] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC): return "[ ] Bonding / [ ] MitM / [X] Sec Conn / [X] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_BOND): return "[X] Bonding / [ ] MitM / [X] Sec Conn / [X] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM): return "[ ] Bonding / [X] MitM / [X] Sec Conn / [X] Keypress";
-			case (BLE_SM_PAIR_AUTHREQ_KEYPRESS | BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND):
-				return "[X] Bonding / [X] MitM / [X] Sec Conn / [X] Keypress";
-			default: return "[ ] Bonding / [ ] MitM / [ ] Sec Conn / [ ] Keypress";
+			case 0x00: return "Bonding [ ] | MitM [ ] | Secure Connection [ ] ";
+			case BLE_SM_PAIR_AUTHREQ_BOND: return "Bonding [X] | MitM [ ] | Secure Connection [ ] ";
+			case BLE_SM_PAIR_AUTHREQ_MITM: return "Bonding [ ] | MitM [X] | Secure Connection [ ] ";
+			case (BLE_SM_PAIR_AUTHREQ_BOND | BLE_SM_PAIR_AUTHREQ_MITM): return "Bonding [X] | MitM [X] | Secure Connection [ ] ";
+			case BLE_SM_PAIR_AUTHREQ_SC: return "Bonding [ ] | MitM [ ] | Secure Connection [X] ";
+			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_BOND): return "Bonding [X] | MitM [ ] | Secure Connection [X] ";
+			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM): return "Bonding [ ] | MitM [X] | Secure Connection [X] ";
+			case (BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND): return "Bonding [X] | MitM [X] | Secure Connection [X] ";
+			default: return "Bonding [ ] | MitM [ ] | Secure Connection [ ] ";
 		}
 	}
 
-	// void printConnInfo(const NimBLEConnInfo &connInfo);
 	inline void printConnInfo(const NimBLEConnInfo& connInfo)
 	{
 		Serial.printf("=== NimBLEConnInfo ===\n");

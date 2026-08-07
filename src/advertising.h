@@ -7,22 +7,132 @@
 #include <optional>
 #include <vector>
 #include <map>
+#include <array>
 
 enum class DiscoverableMode{ None, Limited, General };
 
 namespace Advertising
 {
+	enum class AdvertisementMode : uint8_t
+	{
+		ConnectableUndirectedScannable,
+		ConnectableUndirectedNonScannable,
+		NonconnectableUndirectedScannable,
+		NonconnectableUndirectedNonScannable,
+		ConnectableDirectedNonScannable,
+		NonconnectableDirectedScannable,
+		NonconnectableDirectedNonScannable
+	};
+
+	struct AdvertisementModeProperties
+	{
+		bool connectable;
+		bool directed;
+		bool scannable;
+		std::string_view name;
+	};
+
+	inline constexpr AdvertisementModeProperties modeProperties(AdvertisementMode mode) noexcept
+	{
+		switch (mode)
+		{
+			case AdvertisementMode::ConnectableUndirectedScannable: return { true,  false, true, "Connectable [X] | Directed [ ] | Scannable [X]" };
+			case AdvertisementMode::ConnectableUndirectedNonScannable: return { true,  false, false, "Connectable [X] | Directed [ ] | Scannable [ ]" };
+			case AdvertisementMode::NonconnectableUndirectedScannable: return { false, false, true, "Connectable [ ] | Directed [ ] | Scannable [X]" };
+			case AdvertisementMode::NonconnectableUndirectedNonScannable: return { false, false, false, "Connectable [ ] | Directed [ ] | Scannable [ ]" };
+			case AdvertisementMode::ConnectableDirectedNonScannable: return { true,  true,  false, "Connectable [X] | Directed [X] | Scannable [ ]" };
+			case AdvertisementMode::NonconnectableDirectedScannable: return { false, true,  true, "Connectable [ ] | Directed [X] | Scannable [X]" };
+			case AdvertisementMode::NonconnectableDirectedNonScannable: return { false, true,  false, "Connectable [ ] | Directed [X] | Scannable [ ]" };
+			default: return { false, false, false, "Unsupported" };
+		}
+	}
+
+	inline constexpr std::string_view modeToString(AdvertisementMode mode) noexcept
+	{
+		return modeProperties(mode).name;
+	}
+
+	inline constexpr bool modeIsDirected(AdvertisementMode mode) noexcept
+	{
+		return modeProperties(mode).directed;
+	}
+
+	#if CONFIG_BT_NIMBLE_EXT_ADV
+	inline constexpr std::array<AdvertisementMode, 6> supportedModes{
+		AdvertisementMode::ConnectableUndirectedNonScannable,
+		AdvertisementMode::NonconnectableUndirectedScannable,
+		AdvertisementMode::NonconnectableUndirectedNonScannable,
+		AdvertisementMode::ConnectableDirectedNonScannable,
+		AdvertisementMode::NonconnectableDirectedScannable,
+		AdvertisementMode::NonconnectableDirectedNonScannable
+	};
+	#else
+	inline constexpr std::array<AdvertisementMode, 4> supportedModes{
+		AdvertisementMode::ConnectableUndirectedScannable,
+		AdvertisementMode::NonconnectableUndirectedScannable,
+		AdvertisementMode::NonconnectableUndirectedNonScannable,
+		AdvertisementMode::ConnectableDirectedNonScannable
+	};
+	#endif
+
+	inline constexpr bool modeIsSupported(AdvertisementMode mode) noexcept
+	{
+		for (auto supported : supportedModes)
+		{
+			if (supported == mode)
+				return true;
+		}
+		return false;
+	}
+
+	inline constexpr AdvertisementMode undirectedMode(AdvertisementMode mode) noexcept
+	{
+		switch (mode)
+		{
+			case AdvertisementMode::ConnectableDirectedNonScannable:
+				#if CONFIG_BT_NIMBLE_EXT_ADV
+				return AdvertisementMode::ConnectableUndirectedNonScannable;
+				#else
+				return AdvertisementMode::ConnectableUndirectedScannable;
+				#endif
+			case AdvertisementMode::NonconnectableDirectedScannable:
+				return AdvertisementMode::NonconnectableUndirectedScannable;
+			case AdvertisementMode::NonconnectableDirectedNonScannable:
+				return AdvertisementMode::NonconnectableUndirectedNonScannable;
+			default:
+				return mode;
+		}
+	}
+
+	inline constexpr AdvertisementMode defaultMode() noexcept
+	{
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		return AdvertisementMode::ConnectableUndirectedNonScannable;
+#else
+		return AdvertisementMode::ConnectableUndirectedScannable;
+#endif
+	}
+
+	inline constexpr AdvertisementMode nextMode(AdvertisementMode mode) noexcept
+	{
+		for (size_t i = 0; i < supportedModes.size(); ++i)
+		{
+			if (supportedModes[i] == mode)
+				return supportedModes[(i + 1) % supportedModes.size()];
+		}
+		return supportedModes[0];
+	}
+
 	// BLE spec (Vol 3, Part C, 9.2.3): a Limited Discoverable device must stop advertising after a maximum of TGAP(lim_adv_timeout) = 180 s.
 	inline constexpr uint32_t kLimitedDiscoverableTimeoutSec = 10;
 
 	inline constexpr DiscoverableMode discModeToggle(DiscoverableMode mode) noexcept
 	{
-		// Cycles Limited <-> General only, per current console command scope.
-		// `None` is defined for future use (e.g. explicit non-discoverable instances) but is intentionally not part of this toggle.
 		switch (mode)
 		{
+			case DiscoverableMode::None:	return DiscoverableMode::Limited;
 			case DiscoverableMode::Limited:	return DiscoverableMode::General;
-			default:						return DiscoverableMode::Limited;
+			default:						return DiscoverableMode::None;
 		}
 	}
 
@@ -45,7 +155,10 @@ namespace Advertising
 		uint8_t id = 0;
 		std::string name;
 		DiscoverableMode discoverable = DiscoverableMode::General;
-		bool connectable = true;
+		AdvertisementMode mode = defaultMode();
+		// Restart this ordinary instance after NimBLE reports a connection stop.
+		bool restartAfterConnection = true;
+		std::optional<NimBLEAddress> directedTarget;
 		uint32_t intervalMs = 100;
 		std::vector<uint8_t> manufacturerData;
 		std::string serviceUuid; // empty = none
@@ -66,12 +179,27 @@ namespace Advertising
 	bool Start(uint8_t instanceId);
 	bool Stop(uint8_t instanceId);
 	bool IsActive(uint8_t instanceId);
+	bool CycleMode(uint8_t instanceId);
+	bool SetDirectedTarget(uint8_t instanceId, const NimBLEAddress& target);
+	std::optional<NimBLEAddress> GetDirectedTarget(uint8_t instanceId);
+	bool RestartAfterConnection(uint8_t instanceId, std::optional<bool> enable = std::nullopt);
+	void ClearDirectedTargets();
+	bool IsDirectedActive();
+	std::optional<NimBLEAddress> DirectedTarget();
+
+	// Lifecycle notifications from the NimBLE callbacks. These prevent a later normal Start(0)
+	// from inheriting stale directed parameters after a peer connects.
+	bool OnConnectionEstablished();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void OnAdvertisingStopped(uint8_t instanceId, int reason);
+#endif
+	void RequestRestartAfterConnection(uint8_t instanceId);
+	void CancelRestartAfterConnection(uint8_t instanceId);
+	void CancelAllRestartAfterConnection();
 
 	// Get/set discoverable mode for an instance (updates stored config + re-applies live).
 	DiscoverableMode Discoverable(uint8_t instanceId, std::optional<DiscoverableMode> mode = std::nullopt);
-
-	// Get/set connectable flag for an instance (updates stored config + re-applies live).
-	bool Connectable(uint8_t instanceId, std::optional<bool> connectable = std::nullopt);
+	bool CycleDiscoverability(uint8_t instanceId);
 
 	std::optional<InstanceConfig> GetConfig(uint8_t instanceId);
 
