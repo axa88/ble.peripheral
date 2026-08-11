@@ -306,6 +306,7 @@ namespace
 		unsigned stopped = 0;
 		unsigned failed = 0;
 		std::vector<uint8_t> ids;
+		Advertising::CancelAllRestartAfterConnection();
 #if CONFIG_BT_NIMBLE_EXT_ADV
 		ids = Advertising::ListInstances();
 #else

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <set>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
 
@@ -16,6 +17,9 @@ namespace
 	std::optional<NimBLEAddress> directedTarget_;
 	std::mutex restartMutex_;
 	std::map<uint8_t, TimerHandle_t> restartTimers_;
+	std::map<uint8_t, uint32_t> restartTimerGenerations_;
+	std::set<uint8_t> pendingRestartInstances_;
+	std::map<uint8_t, uint32_t> restartGenerations_;
 	constexpr uint32_t kRestartDelayMs = 5000;
 
 #if !CONFIG_BT_NIMBLE_EXT_ADV
@@ -175,6 +179,9 @@ namespace
 		rebuildLegacyAdvertisement(restored, false);
 	}
 #else
+	// Deterministic service-data payload reused from the legacy fixture: "BeBo" = 0x42 0x65 0x42 0x6F.
+	constexpr char kServiceDataPayload[] = { 'B', 'e', 'B', 'o' };
+
 	uint8_t discModeToExtFlags(DiscoverableMode mode) noexcept
 	{
 		uint8_t flags = BLE_HS_ADV_F_BREDR_UNSUP;
@@ -203,7 +210,14 @@ namespace
 		if (!cfg.manufacturerData.empty())
 			extAdv.setManufacturerData(std::string(reinterpret_cast<const char*>(cfg.manufacturerData.data()), cfg.manufacturerData.size()));
 		if (!cfg.serviceUuid.empty())
-			extAdv.setServiceData(NimBLEUUID(cfg.serviceUuid.c_str()), std::string());
+		{
+			const std::string serviceData(kServiceDataPayload, sizeof(kServiceDataPayload));
+			if (!extAdv.setServiceData(NimBLEUUID(cfg.serviceUuid.c_str()), serviceData))
+			{
+				Serial.printf("[ERR] Failed to configure service data for advertising instance %u\n", cfg.id);
+				return false;
+			}
+		}
 		uint16_t units = msToUnits(cfg.intervalMs);
 		extAdv.setMinInterval(units);
 		extAdv.setMaxInterval(units);
@@ -253,6 +267,57 @@ namespace
 	}
 
 	void restartTimerCallback(TimerHandle_t timer);
+	bool startInstanceLocked(uint8_t instanceId);
+	void tryRestart(uint8_t instanceId, uint32_t generation);
+
+	bool restartPolicyEnabledLocked(const Advertising::InstanceConfig& cfg) noexcept
+	{
+		return cfg.restartAfterConnection &&
+			cfg.discoverable != DiscoverableMode::Limited &&
+			!Advertising::modeIsDirected(cfg.mode);
+	}
+
+	bool invalidateRestartLocked(uint8_t instanceId)
+	{
+		const bool wasPending = pendingRestartInstances_.erase(instanceId) != 0;
+		++restartGenerations_[instanceId];
+		return wasPending;
+	}
+
+	bool invalidateAllRestartsLocked()
+	{
+		const bool hadPending = !pendingRestartInstances_.empty();
+		for (const auto instanceId : pendingRestartInstances_)
+			++restartGenerations_[instanceId];
+		pendingRestartInstances_.clear();
+		return hadPending;
+	}
+
+	void cancelRestartLocked(uint8_t instanceId, const char* reason)
+	{
+		if (invalidateRestartLocked(instanceId))
+			Serial.printf("[BT] Advertising restart cancelled | Adv[%u] | %s\n", instanceId, reason);
+	}
+
+	void cancelAllRestartsLocked(const char* reason)
+	{
+		if (invalidateAllRestartsLocked())
+			Serial.printf("[BT] Advertising restarts cancelled | all instances | %s\n", reason);
+	}
+
+	bool markRestartPendingLocked(uint8_t instanceId, const char* trigger)
+	{
+		auto it = configs_.find(instanceId);
+		if (it == configs_.end() || !restartPolicyEnabledLocked(it->second))
+			return false;
+
+		if (pendingRestartInstances_.insert(instanceId).second)
+		{
+			++restartGenerations_[instanceId];
+			Serial.printf("[BT] Advertising restart pending | Adv[%u] | trigger:%s\n", instanceId, trigger);
+		}
+		return true;
+	}
 
 	void cancelRestartTimer(uint8_t instanceId)
 	{
@@ -264,6 +329,7 @@ namespace
 				return;
 			timer = it->second;
 			restartTimers_.erase(it);
+			restartTimerGenerations_.erase(instanceId);
 		}
 
 		xTimerStop(timer, 0);
@@ -282,6 +348,7 @@ namespace
 				timers.push_back(timer);
 			}
 			restartTimers_.clear();
+			restartTimerGenerations_.clear();
 		}
 
 		for (auto timer : timers)
@@ -293,29 +360,70 @@ namespace
 
 	void scheduleRestartTimer(uint8_t instanceId)
 	{
-		std::lock_guard<std::mutex> lk(restartMutex_);
-		if (restartTimers_.find(instanceId) != restartTimers_.end())
-			return;
-
-		TimerHandle_t timer = xTimerCreate("advRestart", pdMS_TO_TICKS(kRestartDelayMs), pdFALSE, nullptr, restartTimerCallback);
-		if (!timer)
+		uint32_t generation = 0;
 		{
-			Serial.printf("[ERR] Failed to create advertising restart timer for Adv[%u]\n", instanceId);
-			return;
+			std::lock_guard<std::mutex> lk(configMutex_);
+			auto it = configs_.find(instanceId);
+			if (it == configs_.end() || pendingRestartInstances_.find(instanceId) == pendingRestartInstances_.end() ||
+				directedActive_ || !restartPolicyEnabledLocked(it->second) || Advertising::IsActive(instanceId))
+				return;
+			generation = restartGenerations_[instanceId];
 		}
 
-		restartTimers_[instanceId] = timer;
-		if (xTimerStart(timer, 0) != pdPASS)
+		TimerHandle_t staleTimer = nullptr;
+		TimerHandle_t timer = nullptr;
+		BaseType_t timerStartResult = pdFAIL;
 		{
-			restartTimers_.erase(instanceId);
+			std::lock_guard<std::mutex> lk(restartMutex_);
+			auto existing = restartTimers_.find(instanceId);
+			if (existing != restartTimers_.end())
+			{
+				if (restartTimerGenerations_[instanceId] == generation)
+					return;
+				staleTimer = existing->second;
+				restartTimers_.erase(existing);
+				restartTimerGenerations_.erase(instanceId);
+			}
+
+			timer = xTimerCreate("advRestart", pdMS_TO_TICKS(kRestartDelayMs), pdFALSE, nullptr, restartTimerCallback);
+			if (!timer)
+			{
+				Serial.printf("[ERR] Failed to create advertising restart timer for Adv[%u]\n", instanceId);
+			}
+			else
+			{
+				restartTimers_[instanceId] = timer;
+				restartTimerGenerations_[instanceId] = generation;
+				timerStartResult = xTimerStart(timer, 0);
+				if (timerStartResult != pdPASS)
+				{
+					restartTimers_.erase(instanceId);
+					restartTimerGenerations_.erase(instanceId);
+				}
+			}
+		}
+
+		if (staleTimer)
+		{
+			xTimerStop(staleTimer, 0);
+			xTimerDelete(staleTimer, 0);
+		}
+		if (!timer)
+			return;
+
+		if (timerStartResult != pdPASS)
+		{
 			xTimerDelete(timer, 0);
 			Serial.printf("[ERR] Failed to start advertising restart timer for Adv[%u]\n", instanceId);
+			return;
 		}
+		Serial.printf("[BT] Advertising restart scheduled | Adv[%u] | delay:%ums\n", instanceId, kRestartDelayMs);
 	}
 
 	void restartTimerCallback(TimerHandle_t timer)
 	{
 		std::optional<uint8_t> instanceId;
+		uint32_t generation = 0;
 		{
 			std::lock_guard<std::mutex> lk(restartMutex_);
 			for (auto it = restartTimers_.begin(); it != restartTimers_.end(); ++it)
@@ -323,23 +431,140 @@ namespace
 				if (it->second == timer)
 				{
 					instanceId = it->first;
+					generation = restartTimerGenerations_[it->first];
 					restartTimers_.erase(it);
+					restartTimerGenerations_.erase(it->first);
 					break;
 				}
 			}
 		}
 
 		xTimerDelete(timer, 0);
-		if (!instanceId.has_value())
-			return;
+		if (instanceId.has_value())
+			tryRestart(*instanceId, generation);
+	}
 
-		auto cfg = Advertising::GetConfig(*instanceId);
-		if (!cfg.has_value() || !cfg->restartAfterConnection ||	cfg->discoverable == DiscoverableMode::Limited ||
-			Advertising::modeIsDirected(cfg->mode) || Advertising::IsDirectedActive() || Advertising::IsActive(*instanceId))
-			return;
+	bool startInstanceLocked(uint8_t instanceId)
+	{
+		auto it = configs_.find(instanceId);
+		if (it == configs_.end())
+		{
+			Serial.printf("[ERR] No such advertising instance: %u\n", instanceId);
+			return false;
+		}
 
-		bool ok = Advertising::Start(*instanceId);
-		Serial.printf(ok ? "[BT] Advertising restarted | Adv[%u]\n" : "[ERR] Failed to restart advertising | Adv[%u]\n", *instanceId);
+		Advertising::InstanceConfig cfg = it->second;
+		if (!Advertising::modeIsSupported(cfg.mode))
+		{
+			Serial.printf("[ERR] Adv[%u] has an unsupported advertising mode\n", instanceId);
+			return false;
+		}
+		const auto props = Advertising::modeProperties(cfg.mode);
+		if (directedActive_)
+		{
+			Serial.println("[ERR] Directed advertising is already active");
+			return false;
+		}
+		if (Advertising::IsActive(instanceId))
+			return true;
+
+		if (props.directed)
+		{
+			if (!cfg.directedTarget.has_value() || !isBonded(*cfg.directedTarget))
+			{
+				Serial.println("[ERR] Directed mode requires a selected bonded target");
+				return false;
+			}
+
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+			if (!startLegacyDirectedLocked(cfg, *cfg.directedTarget))
+			{
+				Serial.printf("[ERR] Failed to start directed advertising to %s\n", cfg.directedTarget->toString().c_str());
+				return false;
+			}
+#else
+			if (!applyExtendedDataLocked(cfg, false))
+			{
+				Serial.printf("[ERR] Failed to configure directed advertising instance %u\n", instanceId);
+				return false;
+			}
+			if (!Adv()->start(instanceId, static_cast<int>(limitedTimeoutMs(cfg.discoverable)), 0))
+			{
+				Serial.printf("[ERR] Failed to start directed advertising instance %u\n", instanceId);
+				return false;
+			}
+			cancelAllRestartsLocked("directed mode");
+			cancelAllRestartTimers();
+			for (const auto& [id, other] : configs_)
+			{
+				(void)other;
+				if (id != instanceId && Adv()->isActive(id) && !Adv()->stop(id))
+					Serial.printf("[ERR] Failed to stop advertising instance %u while directed mode is active\n", id);
+			}
+#endif
+			directedActive_ = true;
+			directedInstance_ = instanceId;
+			directedTarget_ = cfg.directedTarget;
+			Serial.printf("[BT] Directed advertising started | Adv[%u] | Target=%s\n", instanceId, cfg.directedTarget->toString().c_str());
+			return true;
+		}
+
+		if (!rebuildAdvertisement(cfg, false))
+		{
+			Serial.printf("[ERR] Failed to configure advertising instance %u\n", instanceId);
+			return false;
+		}
+
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		bool ok = Adv()->start(instanceId, static_cast<int>(limitedTimeoutMs(cfg.discoverable)), 0);
+#else
+		bool ok = Adv()->start(limitedTimeoutMs(cfg.discoverable));
+#endif
+		Serial.printf(ok ? "[BT] Advertising started | Adv[%u]\n" : "[ERR] Failed to start advertising | Adv[%u]\n", instanceId);
+		return ok;
+	}
+
+	void tryRestart(uint8_t instanceId, uint32_t generation)
+	{
+		bool retry = false;
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			auto it = configs_.find(instanceId);
+			if (it == configs_.end() || pendingRestartInstances_.find(instanceId) == pendingRestartInstances_.end() ||
+				restartGenerations_[instanceId] != generation)
+				return;
+
+			if (directedActive_)
+			{
+				cancelRestartLocked(instanceId, "directed advertising active");
+				return;
+			}
+			if (!restartPolicyEnabledLocked(it->second))
+			{
+				cancelRestartLocked(instanceId, "restart policy no longer eligible");
+				return;
+			}
+			if (Advertising::IsActive(instanceId))
+			{
+				cancelRestartLocked(instanceId, "advertising already active");
+				return;
+			}
+
+			Serial.printf("[BT] Advertising restart attempted | Adv[%u]\n", instanceId);
+			if (startInstanceLocked(instanceId) && Advertising::IsActive(instanceId))
+			{
+				invalidateRestartLocked(instanceId);
+				Serial.printf("[BT] Advertising restarted | Adv[%u]\n", instanceId);
+			}
+			else
+			{
+				retry = true;
+				Serial.printf("[ERR] Advertising restart failed; retrying | Adv[%u]\n", instanceId);
+			}
+		}
+
+		if (retry)
+			scheduleRestartTimer(instanceId);
 	}
 }
 
@@ -368,6 +593,8 @@ namespace Advertising
 			stored.restartAfterConnection = false;
 		}
 #endif
+		cancelRestartLocked(stored.id, "configuration changed");
+		cancelRestartTimer(stored.id);
 		configs_[stored.id] = stored;
 		if (!modeIsDirected(stored.mode) || stored.directedTarget.has_value())
 			rebuildAdvertisement(stored, false);
@@ -432,7 +659,8 @@ namespace Advertising
 		if (modeChanged && modeIsDirected(previous->second.mode) && !modeIsDirected(stored.mode))
 			legacyOrdinaryCache_.reset();
 #endif
-		CancelRestartAfterConnection(stored.id);
+		cancelRestartLocked(stored.id, "configuration changed");
+		cancelRestartTimer(stored.id);
 		configs_[stored.id] = stored;
 		if (modeIsDirected(stored.mode) && !stored.directedTarget.has_value())
 			return true;
@@ -455,82 +683,16 @@ namespace Advertising
 	bool Start(uint8_t instanceId)
 	{
 		std::lock_guard<std::mutex> lk(configMutex_);
-		auto it = configs_.find(instanceId);
-		if (it == configs_.end())
-		{
-			Serial.printf("[ERR] No such advertising instance: %u\n", instanceId);
-			return false;
-		}
-
-		InstanceConfig cfg = it->second;
-		if (!modeIsSupported(cfg.mode))
-		{
-			Serial.printf("[ERR] Adv[%u] has an unsupported advertising mode\n", instanceId);
-			return false;
-		}
-		const auto props = modeProperties(cfg.mode);
-		if (directedActive_)
-		{
-			Serial.println("[ERR] Directed advertising is already active");
-			return false;
-		}
-		if (IsActive(instanceId))
-			return true;
-
-		if (props.directed)
-		{
-			if (!cfg.directedTarget.has_value() || !isBonded(*cfg.directedTarget))
-			{
-				Serial.println("[ERR] Directed mode requires a selected bonded target");
-				return false;
-			}
-
-#if !CONFIG_BT_NIMBLE_EXT_ADV
-			if (!startLegacyDirectedLocked(cfg, *cfg.directedTarget))
-			{
-				Serial.printf("[ERR] Failed to start directed advertising to %s\n", cfg.directedTarget->toString().c_str());
-				return false;
-			}
-#else
-			if (!applyExtendedDataLocked(cfg, false))
-			{
-				Serial.printf("[ERR] Failed to configure directed advertising instance %u\n", instanceId);
-				return false;
-			}
-			if (!Adv()->start(instanceId, static_cast<int>(limitedTimeoutMs(cfg.discoverable)), 0))
-			{
-				Serial.printf("[ERR] Failed to start directed advertising instance %u\n", instanceId);
-				return false;
-			}
-			CancelAllRestartAfterConnection();
-			for (const auto& [id, other] : configs_)
-			{
-				if (id != instanceId && Adv()->isActive(id) && !Adv()->stop(id))
-					Serial.printf("[ERR] Failed to stop advertising instance %u while directed mode is active\n", id);
-			}
-#endif
-			directedActive_ = true;
-			directedInstance_ = instanceId;
-			directedTarget_ = cfg.directedTarget;
-			Serial.printf("[BT] Directed advertising started | Adv[%u] | Target=%s\n", instanceId, cfg.directedTarget->toString().c_str());
-			return true;
-		}
-
-		if (!rebuildAdvertisement(cfg, false))
-			return false;
-
-#if CONFIG_BT_NIMBLE_EXT_ADV
-		bool ok = Adv()->start(instanceId, static_cast<int>(limitedTimeoutMs(cfg.discoverable)), 0);
-#else
-		bool ok = Adv()->start(limitedTimeoutMs(cfg.discoverable));
-#endif
-		Serial.printf(ok ? "[BT] Advertising started | Adv[%u]\n" : "[ERR] Failed to start advertising | Adv[%u]\n", instanceId);
-		return ok;
+		cancelRestartLocked(instanceId, "manual start");
+		cancelRestartTimer(instanceId);
+		return startInstanceLocked(instanceId);
 	}
 
 	bool Stop(uint8_t instanceId)
 	{
 		std::lock_guard<std::mutex> lk(configMutex_);
+		cancelRestartLocked(instanceId, "manual stop");
+		cancelRestartTimer(instanceId);
 		auto* adv = Adv();
 		if (!adv)
 			return false;
@@ -602,7 +764,8 @@ namespace Advertising
 			Serial.printf("[ERR] Adv[%u] has no compatible supported mode for its discoverability value\n", instanceId);
 			return false;
 		}
-		CancelRestartAfterConnection(instanceId);
+		cancelRestartLocked(instanceId, "mode changed");
+		cancelRestartTimer(instanceId);
 #if !CONFIG_BT_NIMBLE_EXT_ADV
 		if (!modeIsDirected(previous) && modeIsDirected(next))
 		{
@@ -645,6 +808,8 @@ namespace Advertising
 			Serial.printf("[ERR] Adv[%u] target cannot change while advertising is active\n", instanceId);
 			return false;
 		}
+		cancelRestartLocked(instanceId, "directed target changed");
+		cancelRestartTimer(instanceId);
 		it->second.directedTarget = target;
 		return true;
 	}
@@ -666,7 +831,13 @@ namespace Advertising
 		}
 
 		if (!*enable)
-			CancelRestartAfterConnection(instanceId);
+		{
+			{
+				std::lock_guard<std::mutex> lk(configMutex_);
+				cancelRestartLocked(instanceId, "policy disabled");
+			}
+			cancelRestartTimer(instanceId);
+		}
 
 		std::lock_guard<std::mutex> lk(configMutex_);
 		auto it = configs_.find(instanceId);
@@ -689,26 +860,21 @@ namespace Advertising
 		return it->second.restartAfterConnection;
 	}
 
-	void RequestRestartAfterConnection(uint8_t instanceId)
-	{
-		bool shouldRestart = false;
-		{
-			std::lock_guard<std::mutex> lk(configMutex_);
-			auto it = configs_.find(instanceId);
-			if (it != configs_.end())
-				shouldRestart = it->second.restartAfterConnection && it->second.discoverable != DiscoverableMode::Limited && !modeIsDirected(it->second.mode);
-		}
-		if (shouldRestart)
-			scheduleRestartTimer(instanceId);
-	}
-
 	void CancelRestartAfterConnection(uint8_t instanceId)
 	{
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			cancelRestartLocked(instanceId, "explicit stop");
+		}
 		cancelRestartTimer(instanceId);
 	}
 
 	void CancelAllRestartAfterConnection()
 	{
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			cancelAllRestartsLocked("stop all");
+		}
 		cancelAllRestartTimers();
 	}
 
@@ -716,7 +882,11 @@ namespace Advertising
 	{
 		std::lock_guard<std::mutex> lk(configMutex_);
 		for (auto& [id, cfg] : configs_)
+		{
+			cancelRestartLocked(id, "directed targets cleared");
+			cancelRestartTimer(id);
 			cfg.directedTarget.reset();
+		}
 	}
 
 	bool IsDirectedActive()
@@ -731,23 +901,37 @@ namespace Advertising
 		return directedActive_ ? directedTarget_ : std::nullopt;
 	}
 
-	bool OnConnectionEstablished()
+	void OnConnectionEstablished()
 	{
-		std::lock_guard<std::mutex> lk(configMutex_);
-		if (!directedActive_)
-			return false;
+		bool shouldSchedule = false;
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			if (directedActive_)
+			{
 #if !CONFIG_BT_NIMBLE_EXT_ADV
-		restoreLegacyOrdinaryLocked();
+				restoreLegacyOrdinaryLocked();
 #else
-		clearDirectedStateLocked();
+				clearDirectedStateLocked();
 #endif
-		return true;
+			}
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+			else
+				shouldSchedule = markRestartPendingLocked(0, "connection");
+#endif
+		}
+
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+		if (shouldSchedule)
+			scheduleRestartTimer(0);
+#else
+		(void)shouldSchedule;
+#endif
 	}
 
 	#if CONFIG_BT_NIMBLE_EXT_ADV
 	void OnAdvertisingStopped(uint8_t instanceId, int reason)
 	{
-		bool shouldRestart = false;
+		bool shouldSchedule = false;
 		{
 			std::lock_guard<std::mutex> lk(configMutex_);
 			if (directedActive_ && directedInstance_.has_value() && *directedInstance_ == instanceId)
@@ -755,13 +939,13 @@ namespace Advertising
 				if (reason != BLE_HS_EDONE)
 					clearDirectedStateLocked();
 			}
-			else if (reason == 0) // BLE_HS_EDONE indicates that advertising stopped due to a connection being established
+			else if (!directedActive_ && (reason == 0 || reason == BLE_HS_EPREEMPTED))
 			{
-				auto it = configs_.find(instanceId);
-				shouldRestart = it != configs_.end() && it->second.restartAfterConnection && it->second.discoverable != DiscoverableMode::Limited && !modeIsDirected(it->second.mode);
+				shouldSchedule = markRestartPendingLocked(instanceId,
+					reason == 0 ? "connection" : "host preemption");
 			}
 		}
-		if (shouldRestart)
+		if (shouldSchedule)
 			scheduleRestartTimer(instanceId);
 	}
 	#endif
@@ -795,7 +979,8 @@ namespace Advertising
 				Serial.printf("[ERR] Adv[%u] discoverability is incompatible with the selected advertising mode\n", instanceId);
 				return it->second.discoverable;
 			}
-			CancelRestartAfterConnection(instanceId);
+			cancelRestartLocked(instanceId, "discoverability changed");
+			cancelRestartTimer(instanceId);
 			it->second.discoverable = *mode;
 			if (*mode == DiscoverableMode::Limited)
 				it->second.restartAfterConnection = false;
@@ -839,7 +1024,8 @@ namespace Advertising
 			if (!discoverabilityAllowed(candidateMode, candidate))
 				continue;
 
-			CancelRestartAfterConnection(instanceId);
+			cancelRestartLocked(instanceId, "discoverability changed");
+			cancelRestartTimer(instanceId);
 			it->second.mode = candidateMode;
 			it->second.discoverable = candidate;
 			if (candidate == DiscoverableMode::Limited)
@@ -925,7 +1111,8 @@ namespace Advertising
 			Serial.printf("[ERR] No such advertising instance: %u\n", instanceId);
 			return false;
 		}
-		CancelRestartAfterConnection(instanceId);
+		cancelRestartLocked(instanceId, "instance removed");
+		cancelRestartTimer(instanceId);
 		auto* adv = Adv();
 		if (adv->isActive(instanceId) && !adv->stop(instanceId))
 			return false;

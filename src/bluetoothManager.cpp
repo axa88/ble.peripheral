@@ -7,6 +7,7 @@
 #include <functional>
 #include <utility>
 #include <chrono>
+#include <mutex>
 #include <cmath>
 #include <algorithm>
 #include <climits>
@@ -63,9 +64,10 @@ public:
 	{
 		Advertising::OnAdvertisingStopped(instId, reason);
 		Serial.printf("[BT] Advertising stopped (instance %u), reason:0x%x %s\n", instId, reason, NimBLEUtils::returnCodeToString(reason));
-		switch (reason) // seems there are only 2 posibilities, timeout and connect
+		switch (reason) // GAP completion reasons include connection, host preemption, timeout, and solicited stop.
 		{
 			case 0: Serial.println("[BT] Client connecting"); return;
+			case BLE_HS_EPREEMPTED: Serial.println("[BT] Advertising preempted by host"); break;
 			case BLE_HS_ETIMEOUT: Serial.println("[BT] Advertising timed out"); break;
 			case BLE_HS_EDONE: Serial.println("[BT] Advertising stopped (solicited)"); break;
 			default: break;
@@ -88,13 +90,9 @@ public:
 
 	void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override
 	{
-		bool directedConnection = Advertising::OnConnectionEstablished();
+		Advertising::OnConnectionEstablished();
 		Serial.println("[BT] Client connected");
 		notify(BluetoothManager::Event::Connect, connInfo);
-#if !CONFIG_BT_NIMBLE_EXT_ADV
-		if (!directedConnection)
-			Advertising::RequestRestartAfterConnection(0);
-#endif
 	}
 
 	void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override
@@ -230,10 +228,10 @@ bool BluetoothManager::AdvertisingState(uint8_t instance, std::optional<bool> en
 		return Advertising::IsActive(instance);
 
 	bool desired = *enable;
-	if (Advertising::IsActive(instance) == desired)
-		return desired;
-
+	bool active = Advertising::IsActive(instance);
 	Advertising::CancelRestartAfterConnection(instance);
+	if (active == desired)
+		return desired;
 
 	return desired ? Advertising::Start(instance) : Advertising::Stop(instance);
 }

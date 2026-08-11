@@ -8,6 +8,7 @@
 #include <vector>
 #include <map>
 #include <array>
+#include <cstddef>
 
 enum class DiscoverableMode{ None, Limited, General };
 
@@ -156,7 +157,7 @@ namespace Advertising
 		std::string name;
 		DiscoverableMode discoverable = DiscoverableMode::General;
 		AdvertisementMode mode = defaultMode();
-		// Restart this ordinary instance after NimBLE reports a connection stop.
+		// Restart this ordinary instance five seconds after NimBLE reports a connection stop.
 		bool restartAfterConnection = true;
 		std::optional<NimBLEAddress> directedTarget;
 		uint32_t intervalMs = 100;
@@ -187,13 +188,12 @@ namespace Advertising
 	bool IsDirectedActive();
 	std::optional<NimBLEAddress> DirectedTarget();
 
-	// Lifecycle notifications from the NimBLE callbacks. These prevent a later normal Start(0)
-	// from inheriting stale directed parameters after a peer connects.
-	bool OnConnectionEstablished();
+	// Lifecycle notifications from the NimBLE callbacks. Pairing/authentication is intentionally
+	// not part of the advertising restart boundary.
+	void OnConnectionEstablished();
 #if CONFIG_BT_NIMBLE_EXT_ADV
 	void OnAdvertisingStopped(uint8_t instanceId, int reason);
 #endif
-	void RequestRestartAfterConnection(uint8_t instanceId);
 	void CancelRestartAfterConnection(uint8_t instanceId);
 	void CancelAllRestartAfterConnection();
 
