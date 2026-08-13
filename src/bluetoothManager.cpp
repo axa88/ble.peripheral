@@ -1,5 +1,6 @@
 // BluetoothManager.cpp
 #include "BluetoothManager.h"
+#include "fixtureGatt.h"
 #include <Arduino.h>
 #include "configMenuHelp.h"
 #include "processInput.h"
@@ -415,12 +416,10 @@ void BluetoothManager::SetupBluetooth()
 
 	// NimBLEDevice::setCustomGapHandler(evalGapHandler, nullptr);
 
-	// Create server/service/characteristics
+	// Create server and the deterministic GATT fixture.
 	server_ = NimBLEDevice::createServer();
 	server_->setCallbacks(new ServerCallbacks(*this));
-	NimBLEService* service = server_->createService(SERVICE_UUID);
-	characteristic_ = service->createCharacteristic(CHARACTERISTIC_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
-	characteristic_->setValue("Ima Characteristic");
+	characteristic_ = FixtureGatt::Create(*server_);
 	server_->start();
 
 	// Advertising - instance 0 setup delegated to the Advertising:: module (advertising.h/.cpp),
@@ -444,7 +443,7 @@ void BluetoothManager::SetupBluetooth()
 	instance0.discoverable = DiscoverableMode::General;
 	instance0.mode = Advertising::defaultMode();
 	instance0.intervalMs = 100;
-	instance0.serviceUuid = SERVICE_UUID;
+	instance0.serviceUuid = FixtureGatt::ServiceUuid;
 	// Manufacturer-specific data: company ID 0xFFFF (test/internal) + "BeBo" payload
 	instance0.manufacturerData = { 0xFF, 0xFF, 'B', 'e', 'B', 'o' };
 

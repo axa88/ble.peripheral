@@ -59,9 +59,6 @@ private:
 
 	bool initialized_ = false;
 	std::string deviceName_;
-	inline static constexpr char SERVICE_UUID[]        = "12345678-1234-5678-1234-56789abcdef0";
-	inline static constexpr char CHARACTERISTIC_UUID[] = "12345678-1234-5678-1234-56789abcdef1";
-
 	NimBLEServer* server_ = nullptr;
 	NimBLECharacteristic* characteristic_ = nullptr;
 

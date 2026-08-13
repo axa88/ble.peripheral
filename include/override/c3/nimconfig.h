@@ -2,6 +2,12 @@
 
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
+#undef CONFIG_BT_NIMBLE_ROLE_CENTRAL
+#undef CONFIG_BT_NIMBLE_ROLE_OBSERVER
+#undef CONFIG_BT_NIMBLE_TRANSPORT_EVT_SIZE
+/* Prevent compatibility aliases from recreating the cleared framework values. */
+#undef CONFIG_NIMBLE_ROLE_CENTRAL
+#undef CONFIG_NIMBLE_ROLE_OBSERVER
 #else
 #include "ext_nimble_config.h"
 /* Clear redefinition warnings */
