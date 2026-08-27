@@ -186,3 +186,16 @@ Recommended value
 
 ### NimBLE-Arduino Implementation
 This library implements Limited Discoverable Mode by starting advertising with a finite advertising duration (e.g., `start(duration)`), causing advertising to stop automatically when the timeout expires. This is an implementation choice consistent with the GAP intent, rather than a requirement that advertising itself must stop.
+
+---
+
+## GATT Fixture Provenance
+
+The WROVER and C3 images used for cross-platform Central physical acceptance must deploy the consolidated fixture service `12345678-1234-5678-1234-56789abcdef0` with:
+
+* read/write characteristic `...def1`;
+* read/write/notify characteristic `...def2`;
+* read/write/indicate characteristic `...def3`; and
+* a read/write descriptor `...def4` on `...def2`.
+
+An older deployed WROVER image that exposes only `...def1` can connect normally, but cannot validate the notification characteristic or descriptor topology. Refresh the deployed fixture image and retain its build/upload provenance before relying on a Central acceptance result; this record does not claim validation of any particular deployment.
