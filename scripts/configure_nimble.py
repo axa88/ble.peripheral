@@ -12,8 +12,8 @@ checked-in source of configuration defaults.
 Application fragments live in:
     include/override/<group>/nimble_app_config.h
 
-Only the base firmware environments are mapped here. The *-com environments
-exist for application control and are intentionally left untouched.
+Base and serial-upload firmware environments are mapped here. Unmapped
+environments are intentionally left untouched.
 """
 
 import os
@@ -26,7 +26,9 @@ Import("env")  # noqa: F821  (provided by PlatformIO/SCons)
 
 ENV_TO_GROUP = {
     "c3": "c3",
+    "c3-com": "c3",
     "wrover": "wrover",
+    "wrover-com": "wrover",
 }
 
 BLOCK_BEGIN = b"/* ble.peripheral: begin application NimBLE config */"

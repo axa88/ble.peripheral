@@ -1,8 +1,9 @@
 //netManager.cpp
 #include "netManager.h"
-#include <Arduino.h>     // Serial, IPAddress, millis(), ESP.restart()
+#include <Arduino.h>     // Serial, IPAddress
 #include <WiFi.h>        // WiFi, WiFi.config, WiFi.begin, WiFi.onEvent, WL_CONNECTED
 #include <ArduinoOTA.h>  // ArduinoOTA.begin(), ArduinoOTA.handle()
+#include <atomic>
 
 #ifndef WIFI_SSID
 #error "WIFI_SSID not defined - set it as a build_flag in platformio.ini"
@@ -28,9 +29,7 @@ namespace NetMgr
 	IPAddress gateway(192, 168, 1, 1);
 	IPAddress subnet(255, 255, 255, 0);
 
-	// Restart timer
-	std::atomic<unsigned long> lastRestartAttempt{0};
-	const unsigned long restartInterval = 60000;
+	std::atomic<bool> wifiOfflineReported{false};
 
 	void setupNetwork()
 	{
@@ -48,18 +47,17 @@ namespace NetMgr
 			{
 				if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
 				{
-					Serial.println("[NET] WiFi disconnected, reconnecting...");
-					WiFi.begin(ssid, password);
+					if (!wifiOfflineReported.exchange(true))
+						Serial.println("[NET] WiFi disconnected; auto-reconnect remains enabled");
 				}
 				else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP)
 				{
+					wifiOfflineReported = false;
 					Serial.printf("[NET] WiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
-					lastRestartAttempt = millis(); // mark time of last successful connection
 				}
 			});
 
 		WiFi.begin(ssid, password);
-		lastRestartAttempt = millis();
 
 		// OTA setup
 		ArduinoOTA.setHostname(OTA_HOSTNAME);
@@ -104,12 +102,5 @@ namespace NetMgr
 	void loopNetwork() // wont work while console input blocks
 	{
 		ArduinoOTA.handle();
-
-		// Restart if WiFi disconnected too long
-		if (WiFi.status() != WL_CONNECTED && millis() - lastRestartAttempt >= restartInterval)
-		{
-			Serial.println("[NET] WiFi unreachable for too long, rebooting...");
-			ESP.restart();
-		}
 	}
 }
