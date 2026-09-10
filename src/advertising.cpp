@@ -5,7 +5,9 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <cstdint>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <freertos/timers.h>
 
 namespace
@@ -21,12 +23,93 @@ namespace
 	std::set<uint8_t> pendingRestartInstances_;
 	std::map<uint8_t, uint32_t> restartGenerations_;
 	constexpr uint32_t kRestartDelayMs = 5000;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	// Explicit extended-advertising stop completion is the successful NimBLE HCI
+	// disable return plus a verified inactive state. NimBLE-Arduino does not
+	// emit ADV_COMPLETE for that explicit stop path; callbacks remain useful for
+	// spontaneous completion notifications but never complete this generation.
+	std::map<uint8_t, uint32_t> stopRequestGenerations_;
+	std::map<uint8_t, uint32_t> stopCompletionGenerations_;
+	uint32_t nextStopGeneration_ = 0;
+	constexpr uint32_t kStopCompletionTimeoutMs = 5000;
+#endif
 
 #if !CONFIG_BT_NIMBLE_EXT_ADV
 	NimBLEAdvertising* Adv() { return NimBLEDevice::getAdvertising(); }
 	std::optional<Advertising::InstanceConfig> legacyOrdinaryCache_;
 #else
 	NimBLEExtAdvertising* Adv() { return NimBLEDevice::getAdvertising(); }
+#endif
+
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	uint32_t beginStopRequestLocked(uint8_t instanceId)
+	{
+		uint32_t generation = ++nextStopGeneration_;
+		if (generation == 0)
+			generation = ++nextStopGeneration_;
+		stopRequestGenerations_[instanceId] = generation;
+		Serial.printf("[BT] Advertising stop requested | Adv[%u] | generation:%u\n", instanceId, generation);
+		return generation;
+	}
+
+	bool stopCompletionObservedLocked(uint8_t instanceId, uint32_t generation)
+	{
+		auto it = stopCompletionGenerations_.find(instanceId);
+		return it != stopCompletionGenerations_.end() && it->second == generation;
+	}
+
+	bool publishExplicitStopCompletionLocked(uint8_t instanceId, uint32_t generation, bool stopSucceeded, bool inactive)
+	{
+		auto request = stopRequestGenerations_.find(instanceId);
+		if (request == stopRequestGenerations_.end() || request->second != generation)
+			return false;
+
+		if (!stopSucceeded || !inactive)
+		{
+			stopRequestGenerations_.erase(request);
+			return false;
+		}
+
+		stopCompletionGenerations_[instanceId] = generation;
+		stopRequestGenerations_.erase(request);
+		return true;
+	}
+
+	bool waitForStopCompletion(uint8_t instanceId)
+	{
+		uint32_t generation = 0;
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			auto request = stopRequestGenerations_.find(instanceId);
+			if (request == stopRequestGenerations_.end())
+				return true;
+			generation = request->second;
+		}
+
+		TimeOut_t timeoutState;
+		TickType_t ticksToWait = pdMS_TO_TICKS(kStopCompletionTimeoutMs);
+		vTaskSetTimeOutState(&timeoutState);
+		for (;;)
+		{
+			{
+				std::lock_guard<std::mutex> lk(configMutex_);
+				auto request = stopRequestGenerations_.find(instanceId);
+				if (request == stopRequestGenerations_.end())
+					return true;
+				generation = request->second;
+				if (stopCompletionObservedLocked(instanceId, generation))
+					return true;
+			}
+
+			if (xTaskCheckForTimeOut(&timeoutState, &ticksToWait) != pdFALSE)
+			{
+				Serial.printf("[ERR] Advertising stop completion wait timeout | Adv[%u] | generation:%u | timeout:%ums\n",
+					instanceId, generation, kStopCompletionTimeoutMs);
+				return false;
+			}
+			vTaskDelay(std::min(ticksToWait, pdMS_TO_TICKS(10)));
+		}
+	}
 #endif
 
 	uint16_t msToUnits(uint32_t ms) noexcept
@@ -468,6 +551,17 @@ namespace
 		if (Advertising::IsActive(instanceId))
 			return true;
 
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		auto pendingStop = stopRequestGenerations_.find(instanceId);
+		if (pendingStop != stopRequestGenerations_.end() &&
+			!stopCompletionObservedLocked(instanceId, pendingStop->second))
+		{
+			Serial.printf("[ERR] Advertising start blocked by pending stop completion | Adv[%u] | generation:%u\n",
+				instanceId, pendingStop->second);
+			return false;
+		}
+#endif
+
 		if (props.directed)
 		{
 			if (!cfg.directedTarget.has_value() || !isBonded(*cfg.directedTarget))
@@ -682,34 +776,86 @@ namespace Advertising
 
 	bool Start(uint8_t instanceId)
 	{
+	#if CONFIG_BT_NIMBLE_EXT_ADV
+		// A manual E command can follow R while the explicit stop call is still
+		// publishing its HCI-return/inactive boundary. Wait outside configMutex_
+		// so Stop can close the generation, then let startInstanceLocked reject
+		// any new race that is still pending.
+		const bool stopReady = waitForStopCompletion(instanceId);
+		if (!stopReady)
+			return false;
+	#endif
 		std::lock_guard<std::mutex> lk(configMutex_);
 		cancelRestartLocked(instanceId, "manual start");
 		cancelRestartTimer(instanceId);
+	#if CONFIG_BT_NIMBLE_EXT_ADV
+		// A completed explicit stop belongs to the preceding R command. Do not
+		// let its retained generation suppress a later connection callback.
+		stopCompletionGenerations_.erase(instanceId);
+	#endif
 		return startInstanceLocked(instanceId);
 	}
 
 	bool Stop(uint8_t instanceId)
 	{
-		std::lock_guard<std::mutex> lk(configMutex_);
-		cancelRestartLocked(instanceId, "manual stop");
-		cancelRestartTimer(instanceId);
 		auto* adv = Adv();
 		if (!adv)
 			return false;
-
-		bool ok = false;
-#if CONFIG_BT_NIMBLE_EXT_ADV
-		ok = !adv->isActive(instanceId) || adv->stop(instanceId);
-#else
-		ok = !adv->isAdvertising() || adv->stop();
-#endif
-		if (directedActive_ && directedInstance_.has_value() && *directedInstance_ == instanceId)
+		bool wasActive = false;
+		uint32_t stopGeneration = 0;
 		{
-#if !CONFIG_BT_NIMBLE_EXT_ADV
-			restoreLegacyOrdinaryLocked();
+			std::lock_guard<std::mutex> lk(configMutex_);
+			cancelRestartLocked(instanceId, "manual stop");
+			cancelRestartTimer(instanceId);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+			wasActive = adv->isActive(instanceId);
+			if (wasActive)
+				stopGeneration = beginStopRequestLocked(instanceId);
 #else
-			clearDirectedStateLocked();
+			wasActive = adv->isAdvertising();
 #endif
+		}
+
+		bool stopSucceeded = false;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		stopSucceeded = !wasActive || adv->stop(instanceId);
+#else
+		stopSucceeded = !wasActive || adv->stop();
+#endif
+		bool ok = stopSucceeded;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		const bool inactive = !adv->isActive(instanceId);
+		bool stopCompletionPublished = stopGeneration == 0 && inactive;
+		if (stopGeneration != 0)
+		{
+			{
+				std::lock_guard<std::mutex> lk(configMutex_);
+				stopCompletionPublished = publishExplicitStopCompletionLocked(instanceId, stopGeneration, stopSucceeded, inactive);
+			}
+			if (stopCompletionPublished)
+			{
+				Serial.printf("[BT] Advertising stop complete | Adv[%u] | generation:%u | api:1 | active:0 | source:stop-return\n",
+					instanceId, stopGeneration);
+			}
+			else
+			{
+				Serial.printf("[ERR] Advertising stop completion failed | Adv[%u] | generation:%u | api:%u | active:%u\n",
+					instanceId, stopGeneration, stopSucceeded ? 1u : 0u, inactive ? 0u : 1u);
+			}
+		}
+		ok = stopSucceeded && inactive && stopCompletionPublished;
+#endif
+
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			if (directedActive_ && directedInstance_.has_value() && *directedInstance_ == instanceId)
+			{
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+				restoreLegacyOrdinaryLocked();
+#else
+				clearDirectedStateLocked();
+#endif
+			}
 		}
 		Serial.printf(ok ? "[BT] Advertising stopped | Adv[%u]\n" : "[ERR] Failed to stop advertising | Adv[%u]\n", instanceId);
 		return ok;
@@ -932,19 +1078,25 @@ namespace Advertising
 	void OnAdvertisingStopped(uint8_t instanceId, int reason)
 	{
 		bool shouldSchedule = false;
+		bool activeAfterCallback = false;
+		bool explicitStopPending = false;
 		{
 			std::lock_guard<std::mutex> lk(configMutex_);
+			activeAfterCallback = Adv() != nullptr && Adv()->isActive(instanceId);
+			explicitStopPending = stopRequestGenerations_.find(instanceId) != stopRequestGenerations_.end();
 			if (directedActive_ && directedInstance_.has_value() && *directedInstance_ == instanceId)
 			{
 				if (reason != BLE_HS_EDONE)
 					clearDirectedStateLocked();
 			}
-			else if (!directedActive_ && (reason == 0 || reason == BLE_HS_EPREEMPTED))
+			else if (!explicitStopPending && !directedActive_ && (reason == 0 || reason == BLE_HS_EPREEMPTED))
 			{
 				shouldSchedule = markRestartPendingLocked(instanceId,
 					reason == 0 ? "connection" : "host preemption");
 			}
 		}
+		Serial.printf("[BT] Advertising stop complete | Adv[%u] | generation:0 | reason:0x%x | active:%u | source:adv-complete\n",
+			instanceId, reason, activeAfterCallback ? 1u : 0u);
 		if (shouldSchedule)
 			scheduleRestartTimer(instanceId);
 	}

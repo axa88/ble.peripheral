@@ -9,3 +9,12 @@ in the development cycle.
 
 More information about PlatformIO Unit Testing:
 - https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+
+The source-owned extended-advertising transition contract also has a read-only
+static regression. It verifies that explicit C3 stop completion uses the
+successful NimBLE stop return plus inactive state, while spontaneous
+ADV_COMPLETE callbacks remain distinct. Run it from PowerShell 7 before a C3 build:
+
+```powershell
+pwsh -NoProfile -File .\test\verify-advertising-stop-completion.ps1
+```
