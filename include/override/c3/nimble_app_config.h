@@ -1,11 +1,13 @@
 #pragma once
 
+#include <sdkconfig.h>
+
 /*
  * Application-specific NimBLE settings for ESP32-C3.
  *
- * This fragment is inserted after sdkconfig.h and immediately before
- * nimconfig_rename.h by scripts/configure_nimble.py. NimBLE-Arduino remains
- * responsible for all defaults and derived values after this point.
+ * This fragment is force-included after the framework build flags. Including
+ * sdkconfig.h first makes framework defaults available before these overrides;
+ * NimBLE-Arduino remains responsible for normalization and derived values.
  */
 
 /* Clear framework role values and compatibility aliases before normalization. */
