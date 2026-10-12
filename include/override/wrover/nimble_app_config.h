@@ -24,6 +24,10 @@
 /* Let NimBLE derive the legacy event buffer size. */
 #undef CONFIG_BT_NIMBLE_TRANSPORT_EVT_SIZE
 
+/* Default local preferred ATT MTU; console overrides are runtime-only. */
+#undef CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU
+#define CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU 517
+
 /* Keep diagnostic text used by the application logs. */
 #define CONFIG_NIMBLE_CPP_ENABLE_RETURN_CODE_TEXT
 

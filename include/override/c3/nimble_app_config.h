@@ -19,6 +19,10 @@
 /* Let NimBLE derive the event buffer size from extended advertising. */
 #undef CONFIG_BT_NIMBLE_TRANSPORT_EVT_SIZE
 
+/* Default local preferred ATT MTU; console overrides are runtime-only. */
+#undef CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU
+#define CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU 517
+
 /* This application uses extended advertising with four instances. */
 #define CONFIG_BT_NIMBLE_EXT_ADV 1
 #define CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES 4

@@ -81,19 +81,28 @@ namespace ProcessInput
 		{
 			ProcessMenu::consoleMode = ConsoleMode::Config;
 			if (trimmedLen == 0) { Serial.println("[ERR] No value, MTU unchanged"); return; }
-			unsigned long mtu = 0; bool valid = true;
+			constexpr unsigned long maxMtu = 517UL;
+			unsigned long mtu = 0;
+			bool valid = true;
 			for (size_t i = 0; i < trimmedLen; ++i)
 			{
 				char ch = s[start + i];
 				if (ch < '0' || ch > '9') { valid = false; break; }
-				mtu = mtu * 10 + (unsigned long)(ch - '0');
+				const unsigned long digit = static_cast<unsigned long>(ch - '0');
+				if (mtu > maxMtu / 10UL || (mtu == maxMtu / 10UL && digit > maxMtu % 10UL)) { valid = false; break; }
+				mtu = mtu * 10UL + digit;
 			}
-			if (!valid || mtu < 23 || mtu > 517)
+			if (!valid || mtu < 23 || mtu > maxMtu)
 				Serial.println("[ERR] MTU must be 23-517");
 			else
 			{
-				NimBLEDevice::setMTU(static_cast<uint16_t>(mtu));
-				Serial.printf("[CFG] Local MTU set to %lu (takes effect on next connection)\n", mtu);
+				if (NimBLEDevice::setMTU(static_cast<uint16_t>(mtu)))
+					Serial.printf("[CFG] Local preferred MTU set to %lu\n", mtu);
+				else
+				{
+					Serial.printf("[ERR] Failed to set local preferred MTU to %lu\n", mtu);
+					Serial.printf("[CFG] Current local MTU=%u bytes\n", static_cast<unsigned int>(NimBLEDevice::getMTU()));
+				}
 			}
 			return;
 		}

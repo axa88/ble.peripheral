@@ -35,8 +35,8 @@ static_assert(CONFIG_BT_NIMBLE_ROLE_BROADCASTER == 1, "C3 broadcaster role must 
 #ifndef CONFIG_NIMBLE_CPP_ENABLE_GAP_EVENT_CODE_TEXT
 #error "C3 GAP-event diagnostic text must be enabled"
 #endif
-#if CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU != 256
-#error "C3 preferred ATT MTU must be 256"
+#if CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU != 517
+#error "C3 preferred ATT MTU must be 517"
 #endif
 #ifdef CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV
 #error "C3 periodic advertising must remain undefined as in the baseline"
@@ -75,8 +75,8 @@ static_assert(CONFIG_BT_NIMBLE_ROLE_BROADCASTER == 1, "WROVER broadcaster role m
 #ifdef CONFIG_NIMBLE_CPP_ENABLE_GAP_EVENT_CODE_TEXT
 #error "WROVER GAP-event diagnostic text must remain undefined"
 #endif
-#if CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU != 255
-#error "WROVER preferred ATT MTU must be 255"
+#if CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU != 517
+#error "WROVER preferred ATT MTU must be 517"
 #endif
 #ifdef CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV
 #error "WROVER periodic advertising must be disabled and undefined"
