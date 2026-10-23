@@ -6,6 +6,8 @@ Use this procedure for a scoped feature when its implementation is ready for rev
 
 Record the repository, branch, HEAD, working-tree state, and the exact files the feature owns. Read applicable repository instructions. Preserve unrelated and untracked work. Confirm who owns device testing, deployment, commits, local promotion, branch retirement, and remote push before those actions.
 
+Inventory and resolve every feature-created local or remote branch ref and worktree, including sibling or exploratory worktrees, temporary file, and generated output or artifact. Integrate useful work into the reviewed feature tree; retain only artifacts with a named upload, rollback, or reproduction purpose; delete obsolete feature-owned leftovers using exact reviewed paths. Preserve unrelated work, and do not mutate remote refs without explicit authorization. Do not declare closeout complete while a feature-owned branch, worktree, temporary file, output, or artifact has no resolved disposition.
+
 ## Audit the implementation
 
 Review the complete feature diff and trace its paths to runtime consumers. For suspected stale or unused code, search references and inspect conditional compilation, registration, callbacks, generated inputs, and runtime initialization before removal. Keep cleanup inside the authorized feature scope and remove individually reviewed paths.
