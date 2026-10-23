@@ -1,4 +1,6 @@
 {
+	"platformio-ide.useBuiltinPIOCore": true,
+	"platformio-ide.customPATH": "C:\\Users\\axa88\\.platformio\\penv\\Scripts\\.",
 	"platformio-ide.toolbar": [
 		{ "text": "$(home)", "tooltip": "PIO Home", "commands": "platformio-ide.showHome" },
 		{ "text": "$(trashcan)", "tooltip": "Clean", "commands": "platformio-ide.clean" },
