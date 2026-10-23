@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BLE Peripheral</title>
+<style>
+:root{font:15px system-ui,sans-serif;color:#e8eff5;background:#101a23;color-scheme:dark}*{box-sizing:border-box}body{max-width:1200px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:baseline;gap:16px}h1{font-size:1.6rem;margin:0}h2{font-size:1.1rem;margin:0 0 14px}h3{font-size:1rem}p{line-height:1.5}.muted,small{color:#abbccc}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:16px}section{background:#182834;border:1px solid #354959;border-radius:10px;padding:18px;min-width:0}.wide{grid-column:1/-1}.instance-management{border-bottom:1px solid #456171;padding-bottom:10px;margin-bottom:12px}.instance-picker{flex:1 1 250px;max-width:420px}.instance-create label{flex:1 1 150px}.instance-selected{margin-top:12px}.instance-bulk-actions{margin-top:2px}.section-disclosure{margin-top:0}.section-disclosure>summary{font-size:1.1rem;font-weight:600;margin-bottom:14px}label{display:block;margin:10px 0}input,select,button{font:inherit;border:1px solid #567080;border-radius:5px;padding:8px;max-width:100%;background:#11212c;color:inherit}input[type=number]{width:110px}input[type=checkbox]{margin-right:8px}select{width:100%}button{background:#235167;cursor:pointer;margin:5px 5px 5px 0}button:hover{background:#316a83}button:disabled,input:disabled,select:disabled{opacity:.5;cursor:default}button.current-state{background:#285b47;border-color:#8fe3a4;color:#eaffee}button.current-state:disabled{opacity:1}button.inactive-state{background:#4b3b22;border-color:#f0c66e;color:#fff0c8}button.inactive-state:disabled{opacity:1}.danger{background:#673a38}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row label{margin:5px 0}.row input[type=number]{width:100px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px ui-monospace,monospace;margin:8px 0}table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0 16px}td,th{text-align:left;padding:7px 5px;border-bottom:1px solid #354959;overflow-wrap:anywhere}th{color:#abbccc}details{margin-top:12px}summary{cursor:pointer}a{color:#8bcbe4}.state{font-weight:600}.state.active{color:#8fe3a4}.state.inactive{color:#f0c66e}.pair{border-top:1px solid #456171;padding:10px 0}.pair input{width:180px}.pair-instruction{margin:8px 0}.danger-text{color:#ffaaa4}dialog{width:min(560px,calc(100% - 28px));border:2px solid #d66b5e;border-radius:10px;background:#241c1e;color:#fff;padding:20px;box-shadow:0 12px 48px #000b}dialog::backdrop{background:#000b}dialog h2{color:#ffd1ca}dialog .row{justify-content:flex-end}#errorContext{font-weight:600}#errorDetail{overflow-wrap:anywhere}#feedback[data-kind=error]{color:#ffb0a8}#feedback[data-kind=success]{color:#9cebb0}@media(max-width:450px){body{padding:12px}main{grid-template-columns:1fr}header{display:block}}
+</style>
+</head>
+<body>
+<header><h1>BLE Peripheral</h1><span id="connection" class="muted" role="status">Connecting...</span></header>
+<p class="muted">Control this peripheral on your trusted LAN. Pairing requests expire independently of this page.</p>
+<main>
+<section><h2>Advertising</h2>
+<div id="extended" class="instance-management"><h3>Advertising instances</h3>
+<div class="row"><label class="instance-picker">Instance<select id="adv"></select></label><button id="remove" data-worker-action class="danger">Remove selected instance</button></div>
+<div id="extendedControls" class="row instance-create" hidden><label>New instance ID<input id="newId" type="number" min="1" max="3" value="1"></label><label>Name<input id="newName" maxlength="31" value="BLE Peripheral"></label><button id="add" data-worker-action>Add instance</button></div>
+<p id="extendedHelp" class="muted"></p></div>
+<div class="instance-selected"><p id="advState" class="state muted" role="status">Waiting for advertising status.</p>
+<div class="row" role="group" aria-label="Selected instance actions"><button id="start" data-worker-action>Start selected</button><button id="stop" data-worker-action>Stop selected</button></div></div>
+<div class="row instance-bulk-actions" role="group" aria-label="Bulk advertising actions"><button id="startAll" data-worker-action>Start all advertising</button><button id="stopAll" data-worker-action>Stop all</button></div>
+<h3>Selected instance settings</h3>
+<label>Mode<select id="mode" data-worker-action></select></label>
+<label>Discoverability<select id="discoverability" data-worker-action><option value="0">None</option><option value="1">Limited</option><option value="2">General</option></select></label>
+<label>Interval (20-10240 ms)<input id="interval" type="number" min="20" max="10240" value="100"></label><button id="setInterval" data-worker-action>Set interval</button>
+<button id="restartAction" data-worker-action aria-label="Restart after connection" aria-live="polite" disabled>Restart after connection: Unknown</button>
+<label>Directed target (stored bond)<select id="target" data-worker-action></select></label>
+</section>
+<section><h2>Security and bonds</h2><p class="muted">Security changes configure subsequent procedures.</p>
+<label>Pairing I/O<select id="io" data-worker-action><option value="0">Display only</option><option value="1">Display and yes/no</option><option value="2">Keyboard only</option><option value="3">No input or output</option><option value="4">Keyboard and display</option></select></label>
+<div id="securityFlags"></div><h3>Pairing</h3><p id="pairingCapability" class="muted" aria-live="polite">Waiting for device status.</p><div id="pairing" aria-live="polite">No pending requests.</div>
+<h3>Bonds</h3><div id="bonds"></div><button id="deleteBond" data-worker-action class="danger">Delete selected connection's bond</button><button id="deleteAllBonds" data-worker-action class="danger">Delete all bonds</button>
+</section>
+<section><h2>Connections</h2><label>Connected peer<select id="peer"></select></label><pre id="peerInfo"></pre><div class="row"><button id="disconnect" data-worker-action>Disconnect peer</button><button id="disconnectAll" data-worker-action>Disconnect all</button></div>
+<button id="readPeerLink" data-worker-action>Refresh link information</button><pre id="linkInfo" class="muted">RSSI and PHY are read only when requested.</pre>
+<label>Preferred local MTU (23-517)<input id="mtu" type="number" min="23" max="517" value="517"></label><button id="setMtu" data-worker-action>Set preferred MTU</button>
+<h3>Connection parameters</h3><p class="muted">These values are request inputs. The peer details above show the negotiated values.</p><div class="row"><label>Min ms<input id="minInterval" type="number" min="8" max="4000" value="15"></label><label>Max ms<input id="maxInterval" type="number" min="8" max="4000" value="30"></label><label>Latency<input id="latency" type="number" min="0" max="499" value="0"></label><label>Timeout ms<input id="timeout" type="number" min="100" max="32000" value="4000"></label></div><button id="setParameters" data-worker-action>Request parameters</button>
+<label>Data length (27-251 octets)<input id="octets" type="number" min="27" max="251" value="251"></label><button id="setDataLength" data-worker-action>Request data length</button><button id="requestPhy" data-worker-action>Request PHY (TX 1M / RX 2M)</button><p id="phyHelp" class="muted">PHY support is being checked.</p></section>
+<section class="wide"><details class="section-disclosure"><summary>Operation</summary><pre id="feedback" role="status" aria-live="polite">Waiting for device status.</pre><pre id="lastOperation">No queued operation.</pre><pre id="operationData"></pre></details></section>
+<section class="wide"><details class="section-disclosure"><summary>Overview</summary><pre id="overview">Waiting for device status.</pre><div id="advertisements"></div><div id="connectionTable"></div><details><summary>Resource observations</summary><pre id="resources">Waiting for measurements.</pre></details></details></section>
+</main>
+<dialog id="errorDialog" aria-labelledby="errorTitle" aria-describedby="errorContext errorDetail" aria-modal="true">
+<h2 id="errorTitle">Request failed</h2><p id="errorContext"></p><p id="errorDetail" role="alert"></p>
+<div class="row"><button id="stopAdvertisingForError" class="danger" hidden>Stop advertising</button><button id="dismissError" autofocus>Dismiss</button></div>
+</dialog>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const element=(tag,text)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
+let status=null,csrf='',polling=false,lastPeer='',lastAdvSelection='',lastVisibleOperationId='',lastSeenWorkerOperationId='';
+let localWorkerBusy=false,localPendingOperationId='',localPreviousOperationId='';
+let restartPolicyPending=null;
+const pairNodes=new Map();
+const submittedFields=new Map();
+const shownPollErrors=new Map();
+const operationLabels={
+ startAll:'Start all advertising',stopAll:'Stop all advertising',setActive:'Set advertising state',setMode:'Set advertising mode',
+ setDiscoverability:'Set discoverability',setInterval:'Set advertising interval',setRestartAfterConnection:'Set restart policy',
+ setDirectedTarget:'Assign directed target',addInstance:'Add advertising instance',removeInstance:'Remove advertising instance',
+ setCapabilities:'Set pairing I/O',setAuthentication:'Set security flag',setKeyDistribution:'Set key distribution',
+ deleteConnection:'Delete bond',deleteAll:'Delete all bonds',disconnect:'Disconnect peer',disconnectAll:'Disconnect all peers',
+ readPeerLink:'Read peer link',requestPhy:'Request PHY',setDataLength:'Request data length',setConnectionParameters:'Request connection parameters',
+ setPreferred:'Set preferred MTU',enterPasskey:'Submit passkey',confirm:'Submit numeric confirmation'
+};
+const supportedFailureResults=new Set(['Failed','InvalidArgument','Unsupported','Busy']);
+const number=id=>{const field=$(id);if(!field.checkValidity()||!Number.isInteger(Number(field.value))||field.value==='')throw Error('Enter a valid '+id+' value.');return Number(field.value);};
+function selectedAdv(){if(!$('adv').value)throw Error('Select an advertising instance.');return Number($('adv').value);}
+function selectedPeer(){if(!$('peer').value)throw Error('Select a connected peer.');return $('peer').value;}
+function selectedOptionLabel(select){const option=Array.from(select.childNodes||[]).find(item=>String(item.value)===String(select.value));return option?option.textContent:String(select.value);}
+function isProtected(field){return !!field&&(document.activeElement===field||field.dataset.dirty==='true');}
+function markDirty(ids){for(const id of ids){const field=$(id);if(field){field.dataset.dirty='true';field.dataset.editVersion=String((Number(field.dataset.editVersion)||0)+1);}}}
+function syncField(id,value,force=false){const field=$(id);if(!field||(!force&&isProtected(field)))return false;if(field.type==='checkbox')field.checked=!!value;else field.value=value===undefined||value===null?'':String(value);return true;}
+function fieldValue(field){return field.type==='checkbox'?!!field.checked:String(field.value);}
+function captureFieldSnapshots(ids){return ids.map(id=>{const field=$(id);return field?{id,version:Number(field.dataset.editVersion)||0,value:fieldValue(field)}:null;}).filter(Boolean);}
+function syncFromStatusField(id,force=false){
+ if(!status)return;
+ if(['mode','discoverability','interval','target'].includes(id)){
+  const adv=(status.advertising||[]).find(item=>String(item.instanceId)===$('adv').value);if(!adv)return;
+  const target=adv.directedTarget?JSON.stringify([adv.directedTarget.address,adv.directedTarget.addressType]):'';
+  const value=id==='mode'?adv.mode:id==='discoverability'?adv.discoverability:id==='interval'?adv.intervalMs:target;
+  syncField(id,value,force);
+ }else if(id==='io')syncField('io',status.security&&status.security.capabilities,force);
+ else if(id.startsWith('flag-'))syncField(id,status.security&&status.security[id.slice(5)],force);
+ else if(id==='mtu')syncField('mtu',status.preferredMtu,force);
+}
+function releaseFieldSnapshots(snapshots){
+ for(const snapshot of snapshots||[]){
+  const field=$(snapshot.id);
+  if(!field||Number(field.dataset.editVersion||0)!==snapshot.version||fieldValue(field)!==snapshot.value)continue;
+  field.dataset.dirty='false';syncFromStatusField(snapshot.id,true);
+ }
+}
+function options(id,entries){
+ const select=$(id),signature=JSON.stringify(entries.map(item=>[String(item[0]),String(item[1]),!!item[2]])),old=String(select.value||'');
+ const protectedValue=isProtected(select),temporary=select.dataset.hasTemporary==='true';
+ if(select.dataset.optionsSignature===signature&&(!temporary||protectedValue))return;
+ const oldLabel=selectedOptionLabel(select),items=entries.slice();let hasTemporary=false;
+ if(protectedValue&&old&&!items.some(item=>String(item[0])===old)){items.push([old,oldLabel+' (unavailable)',true]);hasTemporary=true;}
+ const nodes=items.map(([value,label,disabled])=>{const option=element('option',label);option.value=String(value);option.disabled=!!disabled;return option;});
+ select.replaceChildren(...nodes);select.dataset.optionsSignature=signature;select.dataset.hasTemporary=hasTemporary?'true':'false';
+ if(items.some(item=>String(item[0])===old))select.value=old;else if(items.length)select.value=String(items[0][0]);else select.value='';
+}
+function feedback(message,kind='info'){const area=$('feedback');area.textContent=message;area.dataset.kind=kind;}
+function operationLabel(route,op){return operationLabels[op]||route+': '+op;}
+function commandContext(route,op,fields={}){
+ const parts=[operationLabel(route,op)];
+ if(fields.instanceId!==undefined)parts.push('advertising instance '+fields.instanceId);
+ else if(fields.connectionId)parts.push('connection '+fields.connectionId);
+ else if(route==='pairing')parts.push('pairing request');
+ return parts.join(' - ');
+}
+function showError(info){
+ const dialog=$('errorDialog');$('errorTitle').textContent=info.title||'Request failed';$('errorContext').textContent=info.context||'The device did not complete the request.';$('errorDetail').textContent=info.detail||'No additional detail was provided.';
+ const stop=$('stopAdvertisingForError'),instanceId=info.stopInstanceId;
+ const offerStop=Number.isInteger(instanceId)&&instanceId>=0;
+ stop.hidden=!offerStop;stop.disabled=false;stop.textContent=offerStop?'Stop advertising on instance '+instanceId:'Stop advertising';dialog.dataset.stopInstanceId=offerStop?String(instanceId):'';
+ if(!dialog.open&&typeof dialog.showModal==='function')dialog.showModal();else if(!dialog.open)dialog.open=true;
+ if(!dialog.open)return;
+ $('dismissError').focus();
+}
+function reportError(error,context=''){
+ if(error&&error.reported)return;
+ if(error)error.reported=true;
+ showError({title:'Request failed',context:context||'Local validation',detail:error&&error.message?error.message:String(error)});
+}
+function invoke(action){try{const result=action();if(result&&typeof result.then==='function')result.catch(error=>reportError(error));}catch(error){reportError(error);}}
+function apiError(message,statusCode,body){
+ const error=Error((body&&body.detail)||message||'The device request failed.');
+ error.statusCode=statusCode||0;error.body=body||{};error.result=body&&body.result;return error;
+}
+async function jsonFetch(url,requestOptions={}){
+ let response,data;
+ try{response=await fetch(url,{credentials:'same-origin',cache:'no-store',...requestOptions});}
+ catch(error){throw apiError(error&&error.message?error.message:'Network request failed.',0,null);}
+ try{data=await response.json();}catch{throw apiError('Device returned HTTP '+response.status+' without a JSON response.',response.status,null);}
+ if(!response.ok)throw apiError(data.detail||data.result||('HTTP '+response.status),response.status,data);
+ return data;
+}
+async function post(route,op,fields={},fieldIds=[]){
+ const snapshots=captureFieldSnapshots(fieldIds);
+ const context=commandContext(route,op,fields);
+ const workerRoute=route!=='pairing';let ownsLocalWorkerBusy=false;
+ try{
+  if(!csrf)throw apiError('Wait for authenticated device status before sending requests.',0,null);
+  if(workerRoute){
+   if(localWorkerBusy)throw apiError('Another BLE operation is still active.',409,{result:'Busy',detail:'Another BLE operation is still active.'});
+   localWorkerBusy=true;localPreviousOperationId=status&&status.lastOperation?status.lastOperation.operationId||'':'';localPendingOperationId='';ownsLocalWorkerBusy=true;
+   if(status)setWorkerAvailability(status);
+  }
+  const data=await jsonFetch('/api/'+route,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({op,...fields})});
+  if(supportedFailureResults.has(data.result))throw apiError(data.detail||data.result,200,data);
+  if(data.result==='Queued'&&data.operationId){
+   if(snapshots.length)submittedFields.set(data.operationId,snapshots);
+   if(workerRoute){localPendingOperationId=data.operationId;ownsLocalWorkerBusy=false;if(status)setWorkerAvailability(status);}
+  }else if(workerRoute){localWorkerBusy=false;localPendingOperationId='';ownsLocalWorkerBusy=false;if(status)setWorkerAvailability(status);}
+  if(data.operationId)feedback('Queued: '+context+' - operation '+data.operationId);
+  else feedback(context+': '+(data.result||'Accepted')+(data.detail?' - '+data.detail:''));
+  return data;
+ }catch(error){
+  releaseFieldSnapshots(snapshots);
+  if(ownsLocalWorkerBusy){localWorkerBusy=false;localPendingOperationId='';if(status)setWorkerAvailability(status);}
+  if(!error.reported){error.reported=true;showError({title:'Device request failed'+(error.statusCode?' (HTTP '+error.statusCode+')':''),context:context+(error.result?' - '+error.result:''),detail:error.message||'Request failed.'});}
+  throw error;
+ }
+}
+function advPost(instanceId,op,fields={},fieldIds=[]){return post('advertising',op,{instanceId,...fields},fieldIds);}
+function peerPost(connectionId,op,fields={},fieldIds=[]){return post('connections',op,{connectionId,...fields},fieldIds);}
+function resetAdvertisingDraftOnSwitch(){
+ const selected=String($('adv').value||'');if(selected===lastAdvSelection)return;
+ for(const id of ['mode','discoverability','interval','target']){
+  const field=$(id);field.dataset.dirty='false';field.dataset.editVersion=String((Number(field.dataset.editVersion)||0)+1);
+ }
+ lastAdvSelection=selected;
+}
+function clearSubmittedFields(operationId){
+ const snapshots=submittedFields.get(operationId);if(!snapshots)return;
+ releaseFieldSnapshots(snapshots);
+ submittedFields.delete(operationId);
+}
+function observeWorker(operation){
+ const observedId=operation&&operation.operationId?operation.operationId:'';
+ if(localWorkerBusy&&localPendingOperationId){
+  if(observedId===localPendingOperationId&&operation.state==='Done'){localWorkerBusy=false;localPendingOperationId='';}
+  else if(observedId&&observedId!==localPendingOperationId&&observedId!==localPreviousOperationId){const supersededId=localPendingOperationId;localWorkerBusy=false;localPendingOperationId='';clearSubmittedFields(supersededId);}
+ }
+ if(!operation||!operation.operationId)return;
+ const previous=lastSeenWorkerOperationId;
+ if(previous&&previous!==operation.operationId)clearSubmittedFields(previous);
+ lastSeenWorkerOperationId=operation.operationId;
+ if(operation.state==='Done')clearSubmittedFields(operation.operationId);
+ if(operation.state!=='Done'||!operation.result||operation.operationId===lastVisibleOperationId)return;
+ lastVisibleOperationId=operation.operationId;
+ const label=operationLabel('worker',operation.operation)+' - '+(operation.target||'device')+' - operation '+operation.operationId;
+ if(operation.result==='Failed'){
+  const recovery=operation.error&&operation.error.code==='advertising_active'&&Number.isInteger(operation.error.instanceId)?operation.error.instanceId:NaN;
+  showError({title:'BLE operation failed',context:label,detail:operation.detail||'The operation failed.',stopInstanceId:Number.isInteger(recovery)?recovery:null});
+ }else feedback(label+': '+operation.result+(operation.detail?' - '+operation.detail:''));
+}
+function renderTable(hostId,headers,rows){
+ const table=element('table'),head=element('tr');for(const label of headers)head.append(element('th',label));table.append(head);
+ for(const values of rows){const row=element('tr');for(const value of values)row.append(element('td',String(value)));table.append(row);}
+ $(hostId).replaceChildren(table);
+}
+function renderSelection(){
+ if(!status)return;
+ const adv=(status.advertising||[]).find(item=>String(item.instanceId)===$('adv').value);
+ if(adv){
+  syncField('mode',adv.mode);syncField('discoverability',adv.discoverability);syncField('interval',adv.intervalMs);
+  const target=adv.directedTarget?JSON.stringify([adv.directedTarget.address,adv.directedTarget.addressType]):'';
+  syncField('target',target);
+  $('advState').textContent='Selected instance '+adv.instanceId+' is '+(adv.active?'active':'inactive')+'.';
+  $('advState').className='state '+(adv.active?'active':'inactive');
+ }else{$('advState').textContent='No advertising instance is available.';$('advState').className='state muted';}
+ const peer=(status.connections||[]).find(item=>item.connectionId===$('peer').value);
+ $('peerInfo').textContent=peer?JSON.stringify(peer,null,2):'No connected peer.';
+ if(lastPeer!==$('peer').value){lastPeer=$('peer').value;$('linkInfo').textContent='RSSI and PHY are read only when requested.';}
+}
+function restartPolicyOperation(operation,instanceId){
+ return !!operation&&operation.operation==='setRestartAfterConnection'&&operation.target==='instance:'+instanceId;
+}
+function reconcileRestartPolicyPending(data){
+ const pending=restartPolicyPending,operation=data&&data.lastOperation;
+ if(!pending)return;
+ if(pending.operationId&&operation&&operation.operationId===pending.operationId){
+  if(operation.state!=='Queued'&&operation.state!=='Running')restartPolicyPending=null;
+  return;
+ }
+ if(pending.operationId&&operation&&operation.operationId&&operation.operationId!==pending.previousOperationId){restartPolicyPending=null;return;}
+ if(!pending.operationId&&restartPolicyOperation(operation,pending.instanceId)&&(operation.state==='Queued'||operation.state==='Running'))return;
+ if(!pending.operationId&&pending.requestPending)return;
+ if(!pending.operationId){
+  const adv=(data&&data.advertising||[]).find(item=>Number(item.instanceId)===pending.instanceId);
+  if(adv&&adv.restartAfterConnection===pending.enabled)restartPolicyPending=null;
+ }
+}
+function renderRestartPolicy(data){
+ reconcileRestartPolicyPending(data);
+ const adv=(data&&data.advertising||[]).find(item=>String(item.instanceId)===$('adv').value);
+ const actual=adv&&typeof adv.restartAfterConnection==='boolean'?adv.restartAfterConnection:null;
+ const action=$('restartAction');
+ const operation=data&&data.lastOperation;
+ const deviceApplying=!!adv&&restartPolicyOperation(operation,adv.instanceId)&&(operation.state==='Queued'||operation.state==='Running');
+ const localApplying=!!adv&&!!restartPolicyPending&&restartPolicyPending.instanceId===Number(adv.instanceId);
+ const applying=deviceApplying||localApplying;
+ const stateText=!adv?'No instance selected':actual===null?'Unknown':actual?'Enabled':'Disabled';
+ action.textContent='Restart after connection: '+stateText+(applying?' (applying...)':'');
+ action.classList.toggle('current-state',actual===true);
+ action.classList.toggle('inactive-state',actual===false);
+ action.setAttribute('aria-busy',String(applying));
+ if(actual===null)action.removeAttribute('aria-pressed');else action.setAttribute('aria-pressed',String(actual));
+ action.title=!adv?'Select an advertising instance.':actual===null?'Wait for the device to report the restart policy.':(actual?'Disable':'Enable')+' restart after connection on instance '+adv.instanceId+'.';
+}
+async function toggleRestartPolicy(){
+ const instanceId=selectedAdv();
+ const adv=(status&&status.advertising||[]).find(item=>Number(item.instanceId)===instanceId);
+ if(!adv||typeof adv.restartAfterConnection!=='boolean')throw Error('Wait for the selected instance restart policy to be reported.');
+ const pending={instanceId,enabled:!adv.restartAfterConnection,operationId:'',requestPending:true,previousOperationId:status.lastOperation&&status.lastOperation.operationId||''};
+ restartPolicyPending=pending;
+ if(status)setWorkerAvailability(status);
+ try{
+  const data=await advPost(instanceId,'setRestartAfterConnection',{enabled:pending.enabled});
+  if(restartPolicyPending===pending){
+   pending.requestPending=false;
+   if(data.result==='Queued'&&data.operationId)pending.operationId=data.operationId;
+   else if(data.result!=='Queued')restartPolicyPending=null;
+  }
+  if(status)setWorkerAvailability(status);
+  return data;
+ }catch(error){
+  if(restartPolicyPending===pending){pending.requestPending=false;restartPolicyPending=null;}
+  if(status)setWorkerAvailability(status);
+  throw error;
+ }
+}
+function renderOverview(data){
+ const device=data.device||{},network=data.network||{},security=data.security||{},caps=data.capabilities||{};
+ $('overview').textContent=JSON.stringify({
+  device:{name:device.name||'',address:device.address||''},
+  network:{ip:network.ip||'',hostname:network.hostname||''},
+  preferredMtu:data.preferredMtu,
+  pairingIoCapability:security.capabilities,
+  security:{bond:!!security.bond,mitm:!!security.mitm,secureConnections:!!security.secureConnections,ltk:!!security.ltk,irk:!!security.irk,csrk:!!security.csrk},
+  capabilities:{extendedAdvertising:!!caps.extendedAdvertising,phyUpdate:!!caps.phyUpdate}
+ },null,2);
+ const ads=data.advertising||[];
+ renderTable('advertisements',['Instance','Name','State','Mode','Discoverability','Interval','Directed target'],ads.map(adv=>[
+  adv.instanceId,adv.name,adv.active?'Active':'Inactive',(caps.supportedModes||[]).find(mode=>mode.value===adv.mode)?.label||adv.mode,
+  ['None','Limited','General'][adv.discoverability]||adv.discoverability,adv.intervalMs+' ms',
+  adv.directedTarget?adv.directedTarget.address+' (type '+adv.directedTarget.addressType+')':'None'
+ ]));
+ const connections=data.connections||[];
+ renderTable('connectionTable',['Peer','Handle','Interval','Latency','Timeout','MTU','Bonded','Encrypted'],connections.map(peer=>[
+  peer.address,peer.handle,peer.intervalMs+' ms',peer.latency,peer.timeoutMs+' ms',peer.mtu,peer.bonded?'Yes':'No',peer.encrypted?'Yes':'No'
+ ]));
+ $('resources').textContent=JSON.stringify(data.resources||{},null,2);
+}
+function setWorkerAvailability(data){
+ const operation=data.lastOperation,busy=localWorkerBusy||!!operation&&(operation.state==='Queued'||operation.state==='Running');
+ for(const control of document.querySelectorAll('[data-worker-action]'))control.disabled=busy||!csrf;
+ const advertising=data.advertising||[],bonds=data.bonds||[],connections=data.connections||[],caps=data.capabilities||{};
+ const adv=advertising.find(item=>String(item.instanceId)===$('adv').value);
+ const peer=connections.find(item=>item.connectionId===$('peer').value);
+ const directed=adv&&(Number(adv.mode)===4||Number(adv.mode)===5||Number(adv.mode)===6);
+ const startButton=$('start'),stopButton=$('stop'),hasSelection=!!adv,active=hasSelection&&!!adv.active;
+ startButton.textContent=active?'Started':'Start selected';
+ stopButton.textContent=hasSelection&&!active?'Stopped':'Stop selected';
+ startButton.classList.toggle('current-state',active);
+ stopButton.classList.toggle('current-state',hasSelection&&!active);
+ startButton.setAttribute('aria-label',!hasSelection?'Start advertising on the selected instance; no instance is selected.':active?'Advertising is active on the selected instance.':'Start advertising on the selected instance.');
+ stopButton.setAttribute('aria-label',!hasSelection?'Stop advertising on the selected instance; no instance is selected.':active?'Stop advertising on the selected instance.':'Advertising is stopped on the selected instance.');
+ startButton.disabled=busy||!csrf||!adv||active||(directed&&!adv.directedTarget);
+ stopButton.disabled=busy||!csrf||!adv||!active;
+ $('startAll').disabled=busy||!csrf||advertising.length===0;
+ $('stopAll').disabled=busy||!csrf||!advertising.some(item=>item.active);
+ for(const id of ['mode','discoverability','target'])$(id).disabled=busy||!csrf||!adv;
+ renderRestartPolicy(data);
+ const restartPolicyKnown=!!adv&&typeof adv.restartAfterConnection==='boolean';
+ $('restartAction').disabled=busy||!csrf||!restartPolicyKnown;
+ $('target').disabled=$('target').disabled||bonds.length===0;
+ $('deleteBond').disabled=busy||!csrf||!peer||!peer.bonded;
+ $('deleteAllBonds').disabled=busy||!csrf||bonds.length===0;
+ for(const id of ['disconnect','readPeerLink','requestPhy','setParameters','setDataLength'])$(id).disabled=busy||!csrf||!peer;
+ $('disconnectAll').disabled=busy||!csrf||connections.length===0;
+ $('requestPhy').disabled=busy||!csrf||!peer||!caps.phyUpdate;
+ $('setMtu').disabled=busy||!csrf;$('setInterval').disabled=busy||!csrf;
+  const maxInstances=Number.isInteger(caps.maxAdvertisingInstances)?caps.maxAdvertisingInstances:0;
+  const newId=Number($('newId').value);
+  const newIdAvailable=Number.isInteger(newId)&&newId>=1&&newId<maxInstances&&!advertising.some(item=>Number(item.instanceId)===newId);
+  $('add').disabled=busy||!csrf||!caps.extendedAdvertising||advertising.length>=maxInstances||!newIdAvailable;
+  $('remove').disabled=busy||!csrf||!caps.extendedAdvertising||advertising.length<=1||!adv||Number(adv.instanceId)===0;
+ $('io').disabled=busy||!csrf;
+ $('phyHelp').textContent=!caps.phyUpdate?'PHY update is not supported by this device build.':!peer?'Select a connected peer before requesting a PHY update.':'Request TX 1M and RX 2M PHY for the selected peer.';
+  $('extendedControls').hidden=!caps.extendedAdvertising||maxInstances<=1;
+  $('extendedHelp').textContent=!caps.extendedAdvertising?'Extended advertising is not supported by this device, so additional advertising instances cannot be added.':maxInstances<=1?'Configured capacity allows no additional advertising instances.':'Instance 0 is reserved and cannot be removed.';
+ if(Number.isInteger(caps.maxAdvertisingInstances))$('newId').max=Math.max(0,caps.maxAdvertisingInstances-1);
+}
+function renderStatus(data){
+ const previousToken=csrf;status=data;csrf=data.csrfToken||'';
+ if(previousToken&&csrf&&previousToken!==csrf){for(const id of submittedFields.keys())clearSubmittedFields(id);lastSeenWorkerOperationId='';lastVisibleOperationId='';localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';restartPolicyPending=null;}
+ observeWorker(data.lastOperation);
+ const device=data.device||{},network=data.network||{},caps=data.capabilities||{},ads=data.advertising||[],bonds=data.bonds||[],peers=data.connections||[];
+ $('connection').textContent=(device.name||'Peripheral')+' - '+(network.ip||'network unavailable');
+ options('adv',ads.map(item=>[item.instanceId,item.instanceId+' - '+item.name]));
+ resetAdvertisingDraftOnSwitch();
+ const targetEntries=[['','No directed target assigned',!((bonds||[]).length)]];
+ for(const bond of bonds)targetEntries.push([JSON.stringify([bond.address,bond.addressType]),bond.address+' (type '+bond.addressType+')']);
+ for(const item of ads)if(item.directedTarget){const value=JSON.stringify([item.directedTarget.address,item.directedTarget.addressType]);if(!targetEntries.some(entry=>String(entry[0])===value))targetEntries.push([value,item.directedTarget.address+' (current target)']);}
+ options('mode',(caps.supportedModes||[]).map(item=>[item.value,item.label]));
+ options('peer',peers.map(item=>[item.connectionId,item.address+' - handle '+item.handle]));
+ options('target',targetEntries);
+ $('bonds').textContent=bonds.map(item=>item.address+' (type '+item.addressType+')').join(', ')||'No stored bonds.';
+ const security=data.security||{};
+ syncField('io',security.capabilities);
+ for(const flag of ['bond','mitm','secureConnections','ltk','irk','csrk'])syncField('flag-'+flag,security[flag]);
+ syncField('mtu',data.preferredMtu);
+ renderSelection();
+ renderOverview(data);
+ const operation=data.lastOperation;
+ const waitingForCurrent=localWorkerBusy&&localPendingOperationId&&operation&&operation.operationId===localPreviousOperationId;
+ $('lastOperation').textContent=waitingForCurrent?'Waiting for operation '+localPendingOperationId+' to appear in device status.':operation?JSON.stringify(operation,null,2):localWorkerBusy?'Waiting for device operation status.':'No queued operation.';
+ $('operationData').textContent=!waitingForCurrent&&operation&&operation.data?JSON.stringify(operation.data,null,2):'';
+ if(operation&&operation.operation==='readPeerLink'&&operation.state==='Done'&&operation.data&&operation.data.connectionId===$('peer').value)$('linkInfo').textContent=JSON.stringify(operation.data,null,2);
+ setWorkerAvailability(data);
+}
+function ioCapabilityText(value){
+ switch(Number(value)){
+  case 0:return 'Display only';
+  case 1:return 'Display and yes/no';
+  case 2:return 'Keyboard only';
+  case 3:return 'No input or output';
+  case 4:return 'Keyboard and display';
+  default:return 'Unknown I/O capability';
+ }
+}
+function ioCapabilityInstructions(value){
+ switch(Number(value)){
+  case 0:return 'This peripheral can display a passkey. Enter it on the peer when requested. The I/O setting applies to future procedures.';
+  case 1:return 'Compare numeric values when prompted, then accept or reject the match on this page. The I/O setting applies to future procedures.';
+  case 2:return 'Enter the six-digit passkey shown by the peer when requested. The I/O setting applies to future procedures.';
+  case 3:return 'No interactive input or output is configured. Pairing may fail when the peer or security requirements need input or confirmation. The I/O setting applies to future procedures.';
+  case 4:return 'This peripheral can display or enter passkeys and can confirm numeric matches on this page. The I/O setting applies to future procedures.';
+  default:return 'Pairing instructions are unavailable until the I/O capability is reported.';
+ }
+}
+function pairingInstructions(request,io){
+ if(!request)return ioCapabilityInstructions(io);
+ if(request.type==='Display')return 'This active request displays a passkey from the peripheral. Enter it on the peer. The current I/O setting applies to future procedures.';
+ if(request.type==='PasskeyEntry')return 'This active request needs a passkey. Enter the six-digit value shown on the peer.';
+ if(request.type==='NumericConfirmation')return 'This active request needs a numeric decision. Compare this value with the peer and accept only when both sides match.';
+ return 'A pairing request is pending.';
+}
+function createPairNode(request,io){
+ const node=element('div');node.className='pair';node.dataset.controlsSignature='';
+ const heading=element('strong',request.type+' - '+(request.connectionId||'device-level'));heading.dataset.heading='';
+ const instruction=element('p');instruction.className='pair-instruction';instruction.dataset.instruction='';
+ const value=element('p');value.dataset.value='';
+ const remaining=element('small');remaining.dataset.remaining='';
+ const controls=element('div');controls.dataset.controls='';
+ node.append(heading,instruction,value,remaining,controls);
+ configurePairControls(node,request);
+ return node;
+}
+function configurePairControls(node,request){
+ const controls=node.querySelector('[data-controls]'),signature=request.type;
+ if(node.dataset.controlsSignature===signature)return;
+ node.dataset.controlsSignature=signature;controls.replaceChildren();
+ if(request.type==='PasskeyEntry'){
+  const form=document.createElement('form'),input=document.createElement('input'),button=element('button','Send passkey');
+  input.type='password';input.inputMode='numeric';input.maxLength=6;input.pattern='[0-9]{6}';input.autocomplete='off';input.required=true;input.setAttribute('aria-label','Six-digit passkey');
+  form.append(input,button);form.onsubmit=event=>{event.preventDefault();if(!/^[0-9]{6}$/.test(input.value))return;const requestId=request.requestId,passkey=Number(input.value);input.value='';invoke(()=>post('pairing','enterPasskey',{requestId,passkey}));};
+  controls.append(form);
+ }else if(request.type==='NumericConfirmation'){
+  for(const [label,accepted] of [['Accept match',true],['Reject',false]]){const button=element('button',label);button.onclick=()=>{const requestId=request.requestId;invoke(()=>post('pairing','confirm',{requestId,accepted}));};controls.append(button);}
+ }
+}
+function renderPairing(data){
+ const requests=data.requests||[],live=new Set(requests.map(item=>item.requestId)),io=status&&status.security?status.security.capabilities:undefined;
+ for(const [id,node] of pairNodes)if(!live.has(id)){node.remove();pairNodes.delete(id);}
+ $('pairingCapability').textContent='Current I/O mode: '+ioCapabilityText(io)+'. '+ioCapabilityInstructions(io);
+ for(const request of requests){
+  let node=pairNodes.get(request.requestId);
+  if(!node){node=createPairNode(request,io);pairNodes.set(request.requestId,node);$('pairing').append(node);}
+  configurePairControls(node,request);
+  node.querySelector('[data-heading]').textContent=request.type+' - '+(request.connectionId||'device-level');
+  node.querySelector('[data-instruction]').textContent=pairingInstructions(request,io);
+  node.querySelector('[data-value]').textContent=request.value===undefined?'':String(request.value).padStart(6,'0');
+  node.querySelector('[data-remaining]').textContent='Expires in '+Math.max(0,Math.ceil(request.expiresInMs/1000))+' seconds';
+ }
+ if(!requests.length)$('pairing').replaceChildren(document.createTextNode('No pending requests.'));
+ else for(const child of Array.from($('pairing').childNodes))if(child.nodeType===Node.TEXT_NODE)child.remove();
+}
+function showPollError(key,error){
+ const signature=key+'|'+(error&&error.message?error.message:String(error));
+ if(error&&error.statusCode===409&&error.result==='Busy')return;
+ if(shownPollErrors.get(key)===signature)return;
+ shownPollErrors.set(key,signature);
+ showError({title:key+' unavailable',context:'The page could not refresh device state.',detail:error&&error.message?error.message:String(error)});
+}
+async function poll(){
+ if(polling)return;polling=true;
+ try{
+  try{renderStatus(await jsonFetch('/api/status'));shownPollErrors.delete('Status');}
+  catch(error){$('connection').textContent='Status unavailable: '+error.message;showPollError('Status',error);}
+  try{renderPairing(await jsonFetch('/api/pairing'));shownPollErrors.delete('Pairing status');}
+  catch(error){$('pairingCapability').textContent='Pairing state is temporarily unavailable.';showPollError('Pairing status',error);}
+ }finally{polling=false;setTimeout(poll,1500);}
+}
+function installHandlers(){
+ $('adv').onchange=()=>{resetAdvertisingDraftOnSwitch();renderSelection();if(status)setWorkerAvailability(status);};$('peer').onchange=()=>{renderSelection();if(status)setWorkerAvailability(status);};
+ $('start').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:true});});
+ $('stop').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:false});});
+ $('startAll').onclick=()=>invoke(()=>post('advertising','startAll'));
+ $('stopAll').onclick=()=>invoke(()=>post('advertising','stopAll'));
+ $('mode').onchange=()=>invoke(()=>{const instanceId=selectedAdv(),mode=Number($('mode').value);markDirty(['mode']);return advPost(instanceId,'setMode',{mode},['mode']);});
+ $('discoverability').onchange=()=>invoke(()=>{const instanceId=selectedAdv(),mode=Number($('discoverability').value);markDirty(['discoverability']);return advPost(instanceId,'setDiscoverability',{mode},['discoverability']);});
+ $('target').onchange=()=>invoke(()=>{const instanceId=selectedAdv(),value=$('target').value;if(!value)throw Error('Choose a stored bond for the directed target.');const [bondAddress,addressType]=JSON.parse(value);markDirty(['target']);return advPost(instanceId,'setDirectedTarget',{bondAddress,addressType},['target']);});
+ $('restartAction').onclick=()=>invoke(toggleRestartPolicy);
+ $('setInterval').onclick=()=>invoke(()=>{const instanceId=selectedAdv(),intervalMs=number('interval');markDirty(['interval']);return advPost(instanceId,'setInterval',{intervalMs},['interval']);});
+ $('add').onclick=()=>invoke(()=>post('advertising','addInstance',{instanceId:number('newId'),name:$('newName').value}));
+ $('remove').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'removeInstance');});
+ $('io').onchange=()=>invoke(()=>{const value=Number($('io').value);markDirty(['io']);return post('security','setCapabilities',{value},['io']);});
+ for(const [flag,label,operation] of [['bond','Bonding','setAuthentication'],['mitm','MITM protection','setAuthentication'],['secureConnections','Secure Connections','setAuthentication'],['ltk','LTK distribution','setKeyDistribution'],['irk','IRK distribution','setKeyDistribution'],['csrk','CSRK distribution','setKeyDistribution']]){
+  const row=element('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.id='flag-'+flag;checkbox.dataset.workerAction='';checkbox.onchange=()=>invoke(()=>{const enabled=checkbox.checked;markDirty([checkbox.id]);return post('security',operation,{flag,enabled},[checkbox.id]);});row.append(checkbox,document.createTextNode(label));$('securityFlags').append(row);
+ }
+ $('deleteBond').onclick=()=>invoke(()=>{const connectionId=selectedPeer();if(!confirm("Delete the selected connection's stored bond?"))return;return post('bonds','deleteConnection',{connectionId});});
+ $('deleteAllBonds').onclick=()=>invoke(()=>{if(confirm('Delete all stored bonds?'))return post('bonds','deleteAll');});
+ $('disconnect').onclick=()=>invoke(()=>peerPost(selectedPeer(),'disconnect'));
+ $('disconnectAll').onclick=()=>invoke(()=>post('connections','disconnectAll'));
+ $('readPeerLink').onclick=()=>invoke(()=>peerPost(selectedPeer(),'readPeerLink'));
+ $('requestPhy').onclick=()=>invoke(()=>peerPost(selectedPeer(),'requestPhy'));
+ $('setMtu').onclick=()=>invoke(()=>{const mtu=number('mtu');markDirty(['mtu']);return post('mtu','setPreferred',{mtu},['mtu']);});
+ $('setParameters').onclick=()=>invoke(()=>peerPost(selectedPeer(),'setConnectionParameters',{minIntervalMs:number('minInterval'),maxIntervalMs:number('maxInterval'),latency:number('latency'),supervisionTimeoutMs:number('timeout')}));
+ $('setDataLength').onclick=()=>invoke(()=>peerPost(selectedPeer(),'setDataLength',{octets:number('octets')}));
+  for(const id of ['interval','mtu','minInterval','maxInterval','latency','timeout','octets','newId','newName'])$(id).oninput=()=>{markDirty([id]);if(id==='newId'&&status)setWorkerAvailability(status);};
+ $('dismissError').onclick=()=>$('errorDialog').close();
+ $('stopAdvertisingForError').onclick=()=>invoke(async()=>{
+  const button=$('stopAdvertisingForError'),instanceId=Number($('errorDialog').dataset.stopInstanceId);
+  if(button.disabled)return;if(!Number.isInteger(instanceId)||instanceId<0)throw Error('The affected advertising instance is unavailable.');
+  button.disabled=true;
+  try{await advPost(instanceId,'setActive',{active:false});$('errorDialog').close();feedback('Stop request queued for advertising instance '+instanceId+'. The directed target was not changed; retry it manually after the stop completes.');}
+  catch(error){button.hidden=true;throw error;}
+ });
+}
+installHandlers();
+poll();
+</script>
+</body>
+</html>

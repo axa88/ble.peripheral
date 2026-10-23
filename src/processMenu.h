@@ -4,8 +4,9 @@
 #include <optional>
 #include <cstdint>
 #include <cstddef>
+#include "connectionId.h"
 
-enum class ConsoleMode { Uninitialized, Config, Passkey, PinConfirm, SetMtu, SetAdvInterval, SetConnParams, SetDataLen, AddAdvInstance, SelectBondTarget, SelectAdvInstance };
+enum class ConsoleMode { Uninitialized, Config, Passkey, PinConfirm, SetMtu, SetAdvInterval, SetConnParams, SetDataLen, AddAdvInstance, SelectBondTarget, SelectAdvInstance, SelectPairingRequest };
 
 namespace ProcessMenu
 {
@@ -14,7 +15,7 @@ namespace ProcessMenu
 	void setupProcessMenu();
 	void printConfigMenu();
 	void handleConfigInput();
-	std::optional<uint16_t> GetSelectedHandle();
+	std::optional<ConnectionId> GetSelectedConnectionId();
 	bool SelectBondTarget(size_t index);
 	bool SelectAdvInstance(size_t index);
 

@@ -1,3 +1,5 @@
+#include "bleConfig.h"
+#if BLE_ENABLE_SERIAL_CONSOLE
 // processMenu.cpp
 // #include <Arduino.h>
 #include "processMenu.h"
@@ -13,11 +15,12 @@
 #include <string>       // std::string
 #include <string_view>  // std::string_view
 #include <vector>       // std::vector
+#include <algorithm>    // std::none_of
 #include <random>
 
 namespace
 {
-	static std::optional<uint16_t> selectedHandle;
+	static std::optional<ConnectionId> selectedConnection;
 	static std::optional<NimBLEAddress> selectedBondTarget;
 	static std::atomic<uint8_t> selectedAdvInstance{0};
 
@@ -26,44 +29,56 @@ namespace
 		Serial.printf("[CMD] %c  %.*s\n", key, static_cast<int>(command.description.size()), command.description.data());
 	}
 
-	// Returns a short "address (handle N)" string for the given handle, or "none" if unavailable.
-	std::string describeHandle(std::optional<uint16_t> handle)
+	// Returns a short "address (handle N)" string for a live peer snapshot.
+	std::string describePeer(const BluetoothManager::ConnectedPeerSnapshot& peer)
 	{
-		if (!handle.has_value())
-			return "none";
-
-		auto server = BluetoothManager::Instance().Server();
-		if (!server)
-			return "none";
-
-		NimBLEConnInfo connInfo = server->getPeerInfoByHandle(handle.value());
 		char out[64];
-		snprintf(out, sizeof(out), "%s (handle %u)", connInfo.getAddress().toString().c_str(), static_cast<unsigned>(handle.value()));
+		snprintf(out, sizeof(out), "%s (handle %u)", peer.address.c_str(), static_cast<unsigned>(peer.handle));
 		return std::string(out);
+	}
+
+	std::optional<ConnectionId> currentSelectedConnection()
+	{
+		if (!selectedConnection)
+			return std::nullopt;
+		if (!BluetoothManager::Instance().ConnectionExists(*selectedConnection))
+		{
+			selectedConnection.reset();
+			return std::nullopt;
+		}
+		return selectedConnection;
+	}
+
+	std::optional<BluetoothManager::ConnectedPeerSnapshot> selectedPeerSnapshot()
+	{
+		auto connection = currentSelectedConnection();
+		if (!connection)
+			return std::nullopt;
+		for (const auto& peer : BluetoothManager::Instance().GetConnectedPeerSnapshots())
+			if (peer.connectionId == *connection)
+				return peer;
+		selectedConnection.reset();
+		return std::nullopt;
 	}
 
 	void listConnection()
 	{
-		auto server = BluetoothManager::Instance().Server();
-		if (!server)
-		{
-			Serial.println("[BT] Server uninitialized");
-			return;
-		}
-		auto connections = server->getPeerDevices();
+		auto connections = BluetoothManager::Instance().GetConnectedPeerSnapshots();
 		if (connections.empty())
 		{
+			selectedConnection.reset();
 			Serial.println("[BT] No connections");
 			return;
 		}
+		if (selectedConnection && std::none_of(connections.begin(), connections.end(), [](const auto& peer) { return peer.connectionId == *selectedConnection; }))
+			selectedConnection.reset();
 
 		Serial.println("[BT] Connected peers:");
 		for (size_t i = 0; i < connections.size(); ++i)
 		{
-			uint16_t handle = connections[i];
-			NimBLEConnInfo connInfo = server->getPeerInfoByHandle(handle);
-			const char* marker = (selectedHandle.has_value() && selectedHandle.value() == handle) ? "-->" : "   ";
-			Serial.printf("%s [%zu] handle:%u address:%s\n", marker, i, static_cast<unsigned>(handle), connInfo.getAddress().toString().c_str());
+			const auto& peer = connections[i];
+			const char* marker = (selectedConnection && *selectedConnection == peer.connectionId) ? "-->" : "   ";
+			Serial.printf("%s [%zu] handle:%u address:%s\n", marker, i, static_cast<unsigned>(peer.handle), peer.address.c_str());
 		}
 	}
 
@@ -175,28 +190,30 @@ namespace
 			Serial.println("[CFG] === Server uninitialized");
 		else
 		{
-			auto connections = btMgr.Server()->getPeerDevices();
+			auto connections = btMgr.GetConnectedPeerSnapshots();
+			if (selectedConnection && std::none_of(connections.begin(), connections.end(), [](const auto& peer) { return peer.connectionId == *selectedConnection; }))
+				selectedConnection.reset();
 			if (connections.empty())
 				Serial.println("[CFG] === Connected Peers: none");
 			else
 			{
 				for (size_t i = 0; i < connections.size(); ++i)
 				{
-					uint16_t handle = connections[i];
-					NimBLEConnInfo info = btMgr.Server()->getPeerInfoByHandle(handle);
-					bool selected = selectedHandle.has_value() && selectedHandle.value() == handle;
+					const auto& peer = connections[i];
+					bool selected = selectedConnection && *selectedConnection == peer.connectionId;
 					Serial.printf("[CFG] === Connected Peer [%zu]%s\n", i, selected ? " <-- selected" : "");
-					Serial.printf("[CFG]     Address:         %s\n", info.getAddress().toString().c_str());
-					Serial.printf("[CFG]     Handle:          %u\n", static_cast<unsigned>(handle));
-					Serial.printf("[CFG]     Interval:        %.1f ms\n", info.getConnInterval() * 1.25f);
-					Serial.printf("[CFG]     Timeout:         %u ms\n", info.getConnTimeout() * 10);
-					Serial.printf("[CFG]     Latency:         %u\n", info.getConnLatency());
-					Serial.printf("[CFG]     MTU:             %u bytes\n", info.getMTU());
-					Serial.printf("[CFG]     Bonded:          %s\n", info.isBonded()    ? "yes" : "no");
-					Serial.printf("[CFG]     Encrypted:       %s\n", info.isEncrypted() ? "yes" : "no");
-					Serial.printf("[CFG]     Authenticated:   %s\n", info.isAuthenticated() ? "yes" : "no");
-					Serial.printf("[CFG]     Key Size:        %u\n", info.getSecKeySize());
-					Serial.printf("[CFG]     RSSI:            %d dBm\n", btMgr.GetPeerRssi(handle));
+					Serial.printf("[CFG]     Address:         %s\n", peer.address.c_str());
+					Serial.printf("[CFG]     Handle:          %u\n", static_cast<unsigned>(peer.handle));
+					Serial.printf("[CFG]     Interval:        %.1f ms\n", peer.intervalMs);
+					Serial.printf("[CFG]     Timeout:         %u ms\n", static_cast<unsigned>(peer.timeoutMs));
+					Serial.printf("[CFG]     Latency:         %u\n", peer.latency);
+					Serial.printf("[CFG]     MTU:             %u bytes\n", peer.mtu);
+					Serial.printf("[CFG]     Bonded:          %s\n", peer.bonded ? "yes" : "no");
+					Serial.printf("[CFG]     Encrypted:       %s\n", peer.encrypted ? "yes" : "no");
+					Serial.printf("[CFG]     Authenticated:   %s\n", peer.authenticated ? "yes" : "no");
+					Serial.printf("[CFG]     Key Size:        %u\n", peer.keySize);
+					auto rssi = btMgr.GetPeerRssi(peer.connectionId);
+					Serial.printf(rssi.has_value() ? "[CFG]     RSSI:            %d dBm\n" : "[CFG]     RSSI:            unavailable\n", rssi.value_or(0));
 
 					if (i < connections.size() - 1)
 						Serial.println("[CFG]     --------------------------------------------------------");
@@ -209,32 +226,40 @@ namespace
 	void handleCapabilities(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		std::string_view sv = ConfigMenuHelp::capIoToString(btMgr.Capabilities(ConfigMenuHelp::capIoNext(btMgr.Capabilities())));
+		std::string_view sv = ConfigMenuHelp::capIoToString(btMgr.CycleCapabilities());
 		Serial.printf("[CFG] capabilities=%.*s\n", static_cast<int>(sv.size()), sv.data());
 	}
 
 	void handleDeleteSelectedBond(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
-		btMgr.DeleteBond(selectedHandle.value());
-		Advertising::ClearDirectedTargets();
-		selectedBondTarget.reset();
+		auto connection = ProcessMenu::GetSelectedConnectionId();
+		if (!connection) { Serial.println("[ERR] No live connection selected"); return; }
+		auto result = btMgr.DeleteConnectedPeerBond(*connection);
+		Serial.printf(result.outcome == BluetoothManager::Outcome::Applied
+			? "[BOND] Deleted %d bond(s); %d remain\n"
+			: "[ERR] Bond deletion failed after deleting %d bond(s); %d remain\n",
+			result.deleted, result.remaining);
+		if (selectedBondTarget && !isStoredBond(*selectedBondTarget))
+			selectedBondTarget.reset();
 	}
 
 	void handleDeleteAllBonds(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.DeleteAllBonds();
-		Advertising::ClearDirectedTargets();
-		selectedBondTarget.reset();
+		auto result = btMgr.DeleteAllBonds();
+		Serial.printf(result.outcome == BluetoothManager::Outcome::Applied
+			? "[BOND] Deleted %d bond(s); %d remain\n"
+			: "[ERR] Bulk bond deletion failed after deleting %d bond(s); %d remain\n",
+			result.deleted, result.remaining);
+		if (selectedBondTarget && !isStoredBond(*selectedBondTarget))
+			selectedBondTarget.reset();
 	}
 
 	void handleToggleMitm(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.Authentication(ConfigMenuHelp::authToggleMitm(btMgr.Authentication()));
+		btMgr.ToggleAuthenticationFlag(BLE_SM_PAIR_AUTHREQ_MITM);
 		std::string_view sv = ConfigMenuHelp::authToString(btMgr.Authentication());
 		Serial.printf("[CFG] authentication=%.*s\n", static_cast<int>(sv.size()), sv.data());
 	}
@@ -242,7 +267,7 @@ namespace
 	void handleToggleSecureConnections(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.Authentication(ConfigMenuHelp::authToggleSC(btMgr.Authentication()));
+		btMgr.ToggleAuthenticationFlag(BLE_SM_PAIR_AUTHREQ_SC);
 		std::string_view sv = ConfigMenuHelp::authToString(btMgr.Authentication());
 		Serial.printf("[CFG] authentication=%.*s\n", static_cast<int>(sv.size()), sv.data());
 	}
@@ -250,7 +275,7 @@ namespace
 	void handleToggleLtk(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.Encryption(ConfigMenuHelp::encToggleLTK(btMgr.Encryption()));
+		btMgr.ToggleKeyDistributionFlag(BLE_SM_PAIR_KEY_DIST_ENC);
 		std::string_view sv = ConfigMenuHelp::encToString(btMgr.Encryption());
 		Serial.printf("[CFG] encryption=%.*s\n", static_cast<int>(sv.size()), sv.data());
 	}
@@ -258,7 +283,7 @@ namespace
 	void handleToggleIrk(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.Encryption(ConfigMenuHelp::encToggleIRK(btMgr.Encryption()));
+		btMgr.ToggleKeyDistributionFlag(BLE_SM_PAIR_KEY_DIST_ID);
 		std::string_view sv = ConfigMenuHelp::encToString(btMgr.Encryption());
 		Serial.printf("[CFG] encryption=%.*s\n", static_cast<int>(sv.size()), sv.data());
 	}
@@ -266,7 +291,7 @@ namespace
 	void handleToggleCsrk(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.Encryption(ConfigMenuHelp::encToggleCSRK(btMgr.Encryption()));
+		btMgr.ToggleKeyDistributionFlag(BLE_SM_PAIR_KEY_DIST_SIGN);
 		std::string_view sv = ConfigMenuHelp::encToString(btMgr.Encryption());
 		Serial.printf("[CFG] encryption=%.*s\n", static_cast<int>(sv.size()), sv.data());
 	}
@@ -274,7 +299,7 @@ namespace
 	void handleToggleBond(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		btMgr.Authentication(ConfigMenuHelp::authToggleBond(btMgr.Authentication()));
+		btMgr.ToggleAuthenticationFlag(BLE_SM_PAIR_AUTHREQ_BOND);
 		std::string_view sv = ConfigMenuHelp::authToString(btMgr.Authentication());
 		Serial.printf("[CFG] authentication=%.*s\n", static_cast<int>(sv.size()), sv.data());
 	}
@@ -282,9 +307,9 @@ namespace
 	void handleDisconnectSelected(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
-		btMgr.Server()->disconnect(selectedHandle.value());
+		auto connection = ProcessMenu::GetSelectedConnectionId();
+		if (!connection) { Serial.println("[ERR] No live connection selected"); return; }
+		Serial.println(btMgr.Disconnect(*connection) ? "[BT] Disconnect accepted" : "[ERR] Disconnect failed");
 	}
 
 	void handleSelectAdvertisingInstance(char)
@@ -303,33 +328,18 @@ namespace
 
 	void handleStopAllAdvertising(char)
 	{
-		unsigned stopped = 0;
-		unsigned failed = 0;
-		std::vector<uint8_t> ids;
-		Advertising::CancelAllRestartAfterConnection();
-#if CONFIG_BT_NIMBLE_EXT_ADV
-		ids = Advertising::ListInstances();
-#else
-		ids.push_back(0);
-#endif
-		for (uint8_t id : ids)
-		{
-			if (!Advertising::IsActive(id))
-				continue;
-			if (Advertising::Stop(id))
-				++stopped;
-			else
-				++failed;
-		}
-		Serial.printf("[CFG] Advertising stopped=%u failed=%u\n", stopped, failed);
+		auto result = Advertising::StopAll();
+		Serial.printf("[CFG] Advertising stopped=%u failed=%u\n", result.stopped, result.failed);
 	}
 
 	void handleToggleRestart(char)
 	{
 		uint8_t instance = selectedAdvInstance.load();
 		bool current = Advertising::RestartAfterConnection(instance);
-		bool updated = Advertising::RestartAfterConnection(instance, !current);
-		Serial.printf("[CFG] Adv[%u] RestartAfterConnection=%s\n", instance, updated ? "yes" : "no");
+		if (Advertising::SetRestartAfterConnection(instance, !current))
+			Serial.printf("[CFG] Adv[%u] RestartAfterConnection=%s\n", instance, !current ? "yes" : "no");
+		else
+			Serial.printf("[ERR] Adv[%u] restart setting could not be updated\n", instance);
 	}
 
 	void handleCycleMode(char)
@@ -388,17 +398,16 @@ namespace
 	void handleDisconnectAll(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		auto handles = btMgr.Server()->getPeerDevices();
-		if (handles.empty())
-		{
+		auto result = btMgr.DisconnectAll();
+		if (result == BluetoothManager::Outcome::Applied)
 			Serial.println("[BT] No active connections");
-			return;
+		else if (result == BluetoothManager::Outcome::Accepted)
+		{
+			selectedConnection.reset();
+			Serial.println("[BT] Disconnect accepted for active connection(s)");
 		}
-		for (uint16_t handle : handles)
-			btMgr.Server()->disconnect(handle);
-		selectedHandle.reset();
-		Serial.printf("[BT] Disconnect requested for %u connection(s)\n", static_cast<unsigned>(handles.size()));
+		else
+			Serial.println("[ERR] One or more disconnect requests failed");
 	}
 
 	void handleSetLocalMtu(char)
@@ -410,25 +419,25 @@ namespace
 
 	void handleReadPeerMtu(char)
 	{
-		auto& btMgr = BluetoothManager::Instance();
-		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
-		Serial.printf("[BT] Peer MTU=%u\n", btMgr.GetPeerMtu(selectedHandle.value()));
+		auto peer = selectedPeerSnapshot();
+		if (!peer) { Serial.println("[ERR] No live connection selected"); return; }
+		Serial.printf("[BT] Peer MTU=%u\n", peer->mtu);
 	}
 
 	void handleRequestPeerPhy(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
-		btMgr.Phy(selectedHandle.value(), BluetoothManager::PhyUpdate{ .txPhysMask = BLE_GAP_LE_PHY_1M_MASK, .rxPhysMask = BLE_GAP_LE_PHY_2M_MASK, .phyOptions = BLE_GAP_LE_PHY_CODED_ANY });
+		auto connection = ProcessMenu::GetSelectedConnectionId();
+		if (!connection) { Serial.println("[ERR] No live connection selected"); return; }
+		auto outcome = btMgr.RequestPhy(*connection, BluetoothManager::PhyUpdate{ .txPhysMask = BLE_GAP_LE_PHY_1M_MASK, .rxPhysMask = BLE_GAP_LE_PHY_2M_MASK, .phyOptions = BLE_GAP_LE_PHY_CODED_ANY });
+		Serial.println(outcome == BluetoothManager::Outcome::Accepted ? "[BT] PHY update accepted" : "[ERR] PHY update failed");
 	}
 
 	void handleSetConnectionParameters(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
 		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
+		if (!ProcessMenu::GetSelectedConnectionId()) { Serial.println("[ERR] No live connection selected"); return; }
 		Serial.println("[CFG] Enter conn params as minMs maxMs latency timeoutMs:");
 		ProcessMenu::consoleMode = ConsoleMode::SetConnParams;
 	}
@@ -437,7 +446,7 @@ namespace
 	{
 		auto& btMgr = BluetoothManager::Instance();
 		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
+		if (!ProcessMenu::GetSelectedConnectionId()) { Serial.println("[ERR] No live connection selected"); return; }
 		Serial.println("[CFG] Enter data length in octets from 27 to 251:");
 		ProcessMenu::consoleMode = ConsoleMode::SetDataLen;
 	}
@@ -445,10 +454,10 @@ namespace
 	void handleReadPeerRssi(char)
 	{
 		auto& btMgr = BluetoothManager::Instance();
-		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		if (!selectedHandle.has_value()) { Serial.println("[ERR] No connection selected"); return; }
-		int8_t rssi = btMgr.GetPeerRssi(selectedHandle.value());
-		Serial.printf(rssi == INT8_MIN ? "[BT] RSSI unavailable\n" : "[BT] RSSI=%d dBm\n", static_cast<int>(rssi));
+		auto connection = ProcessMenu::GetSelectedConnectionId();
+		if (!connection) { Serial.println("[ERR] No live connection selected"); return; }
+		auto rssi = btMgr.GetPeerRssi(*connection);
+		Serial.printf(rssi.has_value() ? "[BT] RSSI=%d dBm\n" : "[BT] RSSI unavailable\n", static_cast<int>(rssi.value_or(0)));
 	}
 
 	void handlePrintMenu(char)
@@ -470,16 +479,16 @@ namespace
 	{
 		auto& btMgr = BluetoothManager::Instance();
 		if (!btMgr.Server()) { Serial.println("[ERR] Server uninitialized"); return; }
-		auto connHandles = btMgr.Server()->getPeerDevices();
-		if (connHandles.empty()) { Serial.println("[BT] No connections"); return; }
+		auto peers = btMgr.GetConnectedPeerSnapshots();
+		if (peers.empty()) { selectedConnection.reset(); Serial.println("[BT] No connections"); return; }
 		size_t selection = static_cast<size_t>(command - '0');
-		if (selection >= connHandles.size())
+		if (selection >= peers.size())
 		{
 			Serial.printf("[ERR] Invalid connection selection %zu\n", selection);
 			return;
 		}
-		selectedHandle = connHandles[selection];
-		Serial.printf("[BT] Selected peer %s\n", describeHandle(selectedHandle).c_str());
+		selectedConnection = peers[selection].connectionId;
+		Serial.printf("[BT] Selected peer %s\n", describePeer(peers[selection]).c_str());
 	}
 
 	const ConsoleCommand::Descriptor commandRegistry[] =
@@ -674,24 +683,26 @@ namespace ProcessMenu
 			BluetoothManager::Event::Disconnect, [](const NimBLEConnInfo& connInfo)
 			{
 				reportPeerState(connInfo);
-				if (selectedHandle == connInfo.getConnHandle()) // reset the selected connection on disconnect
-					selectedHandle.reset();
 			}
 		);
 		btMgr.SubscribeToEvent
 		(
 			BluetoothManager::Event::AuthComplete, [](const NimBLEConnInfo& connInfo)
 			{
-				ProcessMenu::consoleMode = ConsoleMode::Config;
+				Serial.printf("[PAIR] Authentication result: encrypted=%s authenticated=%s bonded=%s key-size=%u\n",
+					connInfo.isEncrypted() ? "yes" : "no",
+					connInfo.isAuthenticated() ? "yes" : "no",
+					connInfo.isBonded() ? "yes" : "no",
+					static_cast<unsigned>(connInfo.getSecKeySize()));
 				reportPeerState(connInfo);
 				printStatus();
 			}
 		);
 	}
 
-	std::optional<uint16_t> GetSelectedHandle()
+	std::optional<ConnectionId> GetSelectedConnectionId()
 	{
-		return selectedHandle;
+		return currentSelectedConnection();
 	}
 
 	bool SelectBondTarget(size_t index)
@@ -708,13 +719,14 @@ namespace ProcessMenu
 			return false;
 		}
 
-		selectedBondTarget = NimBLEDevice::getBondedAddress(static_cast<int>(index));
+		NimBLEAddress target = NimBLEDevice::getBondedAddress(static_cast<int>(index));
 		uint8_t instance = selectedAdvInstance.load();
-		if (!Advertising::SetDirectedTarget(instance, *selectedBondTarget))
+		if (!Advertising::SetDirectedTarget(instance, target))
 		{
 			Serial.printf("[ERR] Directed target could not be assigned to Adv[%u]\n", instance);
 			return false;
 		}
+		selectedBondTarget = target;
 		Serial.printf("[BOND] Adv[%u] directed target=%s\n", instance, selectedBondTarget->toString().c_str());
 		return true;
 	}
@@ -755,3 +767,5 @@ namespace ProcessMenu
 	}
 
 } // ProcessMenu
+
+#endif

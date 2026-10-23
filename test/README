@@ -10,6 +10,69 @@ in the development cycle.
 More information about PlatformIO Unit Testing:
 - https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
 
+## Native pairing-state tests
+
+Run the pure C++ pairing-state tests with PlatformIO Core 6.1.19:
+
+```powershell
+$pioExe = Join-Path $env:USERPROFILE '.platformio\penv\Scripts\pio.exe'
+& $pioExe test -e native -f test_pairing_state
+```
+
+On Windows, use a C++17-capable MinGW compiler. The older optional
+`toolchain-gccmingw32` package provides GCC 5.1 and lacks `std::optional`.
+The portable compiler used for validation is the x64 UCRT GCC 16.2.0 release
+from [WinLibs](https://github.com/brechtsanders/winlibs_mingw/releases/tag/16.2.0posix-14.0.0-ucrt-r2),
+with archive SHA-256 `53fb6773fbdf87cdf22b69a6b2a07ee33d3ada413b42d83044bc7cc6481400d2`.
+After extracting it under `.pio/native-tools/winlibs-16.2.0-ucrt-r2`, run the
+command in PowerShell with its compiler directory temporarily first on `PATH`:
+
+```powershell
+$pairingTestOldPath = $env:PATH
+$pairingTestOldEncoding = $env:PYTHONIOENCODING
+try {
+    $nativeCompilerBin = (Resolve-Path .pio/native-tools/winlibs-16.2.0-ucrt-r2/mingw64/bin).Path
+    $pioExe = Join-Path $env:USERPROFILE '.platformio\penv\Scripts\pio.exe'
+    $env:PATH = $nativeCompilerBin + ';' + $pairingTestOldPath
+    $env:PYTHONIOENCODING = 'utf-8'
+    & $pioExe test -e native -f test_pairing_state
+} finally {
+    $env:PATH = $pairingTestOldPath
+    if ($null -eq $pairingTestOldEncoding) {
+        Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+    } else {
+        $env:PYTHONIOENCODING = $pairingTestOldEncoding
+    }
+}
+```
+
+## Direct web-validation tests
+
+The standalone web-validation test currently runs 60 checks. With the WinLibs
+toolchain extracted under `.pio/native-tools/winlibs-16.2.0-ucrt-r2`, compile
+and run it directly from the repository root:
+
+```powershell
+$webValidationOldPath = $env:PATH
+try {
+    $nativeCompilerBin = (Resolve-Path .pio/native-tools/winlibs-16.2.0-ucrt-r2/mingw64/bin).Path
+    New-Item -ItemType Directory -Path .pio/test-results -Force | Out-Null
+    $webValidationTest = Join-Path (Resolve-Path .pio/test-results).Path 'web-validation-tests.exe'
+    $env:PATH = $nativeCompilerBin + ';' + $webValidationOldPath
+    & (Join-Path $nativeCompilerBin 'g++.exe') -std=c++17 -Wall -Wextra -Werror -Isrc `
+        .\test\test_web_validation\test_main.cpp .\src\webValidation.cpp -o $webValidationTest
+    if ($LASTEXITCODE -ne 0) { throw 'Web-validation test compilation failed.' }
+    & $webValidationTest
+    if ($LASTEXITCODE -ne 0) { throw 'Web-validation tests failed.' }
+} finally {
+    $env:PATH = $webValidationOldPath
+}
+```
+
+The executable prints the individual results and a pass/fail total. It checks
+pure validation helpers; it does not exercise the running HTTP server or prove
+all HTTP security behavior.
+
 The source-owned extended-advertising transition contract also has a read-only
 static regression. It verifies that explicit C3 stop completion uses the
 successful NimBLE stop return plus inactive state, while spontaneous
@@ -18,3 +81,15 @@ ADV_COMPLETE callbacks remain distinct. Run it from PowerShell 7 before a C3 bui
 ```powershell
 pwsh -NoProfile -File .\test\verify-advertising-stop-completion.ps1
 ```
+
+## Browser control regression checks
+
+Run the inline browser script against the focused Node DOM stub:
+
+```powershell
+node .\test\web_ui_regression.cjs
+```
+
+This checks polling synchronization, preserved edits, worker feedback, pairing
+controls and error recovery. It does not replace the Edge/device acceptance
+checklist or test browser layout.

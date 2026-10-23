@@ -6,9 +6,11 @@
 #include <vector>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <optional>
 #include <string>
+#include <mutex>
+#include "bleConfig.h"
+#include "connectionId.h"
 
 class BluetoothManager
 {
@@ -18,6 +20,38 @@ public:
 
 	struct PhyUpdate { uint8_t txPhysMask; uint8_t rxPhysMask; uint16_t phyOptions; };
 	struct PhyResult { uint8_t txPhy; uint8_t rxPhy; };
+	enum class Outcome { Applied, Accepted, Dispatched, InvalidArgument, Unsupported, Failed };
+
+	struct ConnectedPeerSnapshot
+	{
+		ConnectionId connectionId;
+		uint16_t handle;
+		std::string address;
+		std::string identityAddress;
+		double intervalMs;
+		uint32_t timeoutMs;
+		uint16_t latency;
+		uint16_t mtu;
+		bool bonded;
+		bool encrypted;
+		bool authenticated;
+		uint8_t keySize;
+		uint8_t identityAddressType;
+	};
+
+	struct PeerLinkResult
+	{
+		Outcome outcome;
+		std::optional<int8_t> rssiDbm;
+		std::optional<PhyResult> phy;
+	};
+
+	struct BondDeleteResult
+	{
+		Outcome outcome;
+		int deleted;
+		int remaining;
+	};
 
 	// Public API
 	static BluetoothManager& Instance() noexcept;
@@ -28,6 +62,11 @@ public:
 	uint8_t Capabilities(std::optional<uint8_t> capabilities = std::nullopt) noexcept;
 	uint8_t Authentication(std::optional<uint8_t> authentication = std::nullopt) noexcept;
 	uint8_t Encryption(std::optional<uint8_t> encryption = std::nullopt) noexcept;
+	bool SetAuthenticationFlag(uint8_t mask, bool enabled);
+	bool SetKeyDistributionFlag(uint8_t mask, bool enabled);
+	uint8_t ToggleAuthenticationFlag(uint8_t mask);
+	uint8_t ToggleKeyDistributionFlag(uint8_t mask);
+	uint8_t CycleCapabilities();
 
 	// Advertising instance management now delegates to the Advertising:: module (advertising.h/.cpp).
 	// These wrappers exist for callers (processMenu.cpp) that don't need the full InstanceConfig API.
@@ -36,17 +75,28 @@ public:
 	DiscoverableMode AdvertisingDiscoverable(uint8_t instance, std::optional<DiscoverableMode> mode = std::nullopt) noexcept;
 	const std::string& AdvertisingName() const noexcept { return deviceName_; }
 
-	uint16_t GetPeerMtu(uint16_t connHandle) noexcept;
 	std::optional<PhyResult> Phy(uint16_t connHandle, std::optional<PhyUpdate> params = std::nullopt) noexcept;
-	void UpdateConnectionParams(uint16_t connHandle, std::chrono::milliseconds minIntervalMs, std::chrono::milliseconds maxIntervalMs, uint16_t latency, std::chrono::milliseconds supervisionTimeoutMs);
-	void RequestDataLength(uint16_t connHandle, uint16_t octets);
 	int8_t GetPeerRssi(uint16_t connHandle) noexcept;
-	void DeleteBond(uint16_t connHandle);
-	void DeleteAllBonds();
+	std::optional<int8_t> GetPeerRssi(ConnectionId connection) noexcept;
+	std::vector<ConnectedPeerSnapshot> GetConnectedPeerSnapshots();
+	bool TryGetConnectedPeerSnapshots(std::vector<ConnectedPeerSnapshot>& snapshots);
+	bool ConnectionExists(ConnectionId connection);
+	static bool ValidConnectionParameters(uint32_t minIntervalMs, uint32_t maxIntervalMs, uint16_t latency, uint32_t supervisionTimeoutMs);
+	Outcome SetPreferredMtu(uint16_t mtu);
+	Outcome RequestConnectionParams(ConnectionId connection, uint32_t minIntervalMs, uint32_t maxIntervalMs, uint16_t latency, uint32_t supervisionTimeoutMs);
+	Outcome RequestDataLength(ConnectionId connection, uint16_t octets);
+	Outcome RequestPhy(ConnectionId connection, PhyUpdate params);
+	PeerLinkResult ReadPeerLink(ConnectionId connection);
+	Outcome DisconnectAll();
+	BondDeleteResult DeleteConnectedPeerBond(ConnectionId connection);
+	BondDeleteResult DeleteAllBonds();
+	std::optional<ConnectionId> ConnectionIdentity(uint16_t handle);
+	bool InjectPasskey(ConnectionId connection, uint32_t passkey);
+	bool InjectConfirmation(ConnectionId connection, bool accepted);
+	bool Disconnect(ConnectionId connection);
 
 	// Expose if needed
 	NimBLEServer* Server() const noexcept;
-	NimBLECharacteristic* Characteristic() const noexcept;
 
 private:
 	BluetoothManager();
@@ -60,9 +110,24 @@ private:
 	bool initialized_ = false;
 	std::string deviceName_;
 	NimBLEServer* server_ = nullptr;
-	NimBLECharacteristic* characteristic_ = nullptr;
+	struct LiveConnection
+	{
+		ConnectionId id;
+		uint16_t handle = BLE_HS_CONN_HANDLE_NONE;
+		NimBLEAddress peer;
+	};
+	std::recursive_mutex connectionMutex_;
+	std::array<LiveConnection, CONFIG_BT_NIMBLE_MAX_CONNECTIONS> connections_{};
+	uint64_t bootId_ = 0;
+	uint32_t connectionSequence_ = 0;
+	void Connected(const NimBLEConnInfo& info);
+	void Disconnected(const NimBLEConnInfo& info);
+	std::optional<NimBLEConnInfo> ResolveConnection(ConnectionId id); // connectionMutex_ held
+	bool IsCurrentConnectionLocked(ConnectionId id, uint16_t handle, const NimBLEAddress& peer); // connectionMutex_ held
+	void CollectConnectedPeerSnapshots(std::vector<ConnectedPeerSnapshot>& snapshots); // connectionMutex_ held
 
-	std::atomic<uint8_t> capabilities_{ BLE_HS_IO_KEYBOARD_DISPLAY };
+	std::mutex securityMutex_;
+	std::atomic<uint8_t> capabilities_{ (BLE_ENABLE_SERIAL_CONSOLE || BLE_ENABLE_WEB_INTERFACE) ? BLE_HS_IO_KEYBOARD_DISPLAY : BLE_HS_IO_NO_INPUT_OUTPUT };
 	std::atomic<uint8_t> authentication_{ BLE_SM_PAIR_AUTHREQ_SC | BLE_SM_PAIR_AUTHREQ_MITM | BLE_SM_PAIR_AUTHREQ_BOND };
 	std::atomic<uint8_t> encryption_{ BLE_SM_PAIR_KEY_DIST_SIGN | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_ENC };
 	// Per-instance advertising config (name, discoverable mode, connectable, interval, etc.)

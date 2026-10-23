@@ -6,16 +6,16 @@
 #include <atomic>
 
 #ifndef WIFI_SSID
-#error "WIFI_SSID not defined - set it as a build_flag in platformio.ini"
+#error "WIFI_SSID not defined - configure ignored platformio.local.ini using platformio.local.example.ini"
 #endif
 #ifndef WIFI_PASSWORD
-#error "WIFI_PASSWORD not defined - set it as a build_flag in platformio.ini"
+#error "WIFI_PASSWORD not defined - configure ignored platformio.local.ini using platformio.local.example.ini"
 #endif
 #ifndef OTA_HOSTNAME
 #error "OTA_HOSTNAME not defined - set it as a build_flag in platformio.ini for this environment"
 #endif
 #ifndef OTA_PASSWORD
-#error "OTA_PASSWORD not defined - set it as a build_flag in platformio.ini for this environment"
+#error "OTA_PASSWORD not defined - configure ignored platformio.local.ini using platformio.local.example.ini for this environment"
 #endif
 #ifndef DEVICE_IP
 #error "DEVICE_IP not defined - set it as a build_flag in platformio.ini for this environment, e.g. -DDEVICE_IP=192,168,1,160"

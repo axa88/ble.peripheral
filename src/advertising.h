@@ -14,6 +14,28 @@ enum class DiscoverableMode{ None, Limited, General };
 
 namespace Advertising
 {
+	struct StopAllResult
+	{
+		unsigned stopped = 0;
+		unsigned failed = 0;
+	};
+
+	struct StartAllResult
+	{
+		unsigned started = 0;
+		unsigned failed = 0;
+		bool blockedByDirectedMode = false;
+	};
+
+	enum class DirectedTargetUpdateResult : uint8_t
+	{
+		Applied,
+		InstanceNotFound,
+		InvalidTarget,
+		TargetNotBonded,
+		AdvertisingActive
+	};
+
 	enum class AdvertisementMode : uint8_t
 	{
 		ConnectableUndirectedScannable,
@@ -178,15 +200,22 @@ namespace Advertising
 	// Starts an instance. If its stored config has DiscoverableMode::Limited, this passes a timeout (kLimitedDiscoverableTimeoutSec) to NimBLE's own start()
 	// duration parameter so the stack auto-stops it - no manual timer needed. For None/General, duration is 0 (advertise indefinitely until Stop()).
 	bool Start(uint8_t instanceId);
+	StartAllResult StartAll();
 	bool Stop(uint8_t instanceId);
+	StopAllResult StopAll();
 	bool IsActive(uint8_t instanceId);
+	// Returns false when the configuration lock is busy; on success replaces out with a bounded snapshot.
+	bool TrySnapshot(std::vector<InstanceConfig>& out);
 	bool CycleMode(uint8_t instanceId);
+	bool SetMode(uint8_t instanceId, AdvertisementMode mode);
+	bool SetInterval(uint8_t instanceId, uint32_t intervalMs);
+	bool SetDiscoverability(uint8_t instanceId, DiscoverableMode mode);
 	bool SetDirectedTarget(uint8_t instanceId, const NimBLEAddress& target);
-	std::optional<NimBLEAddress> GetDirectedTarget(uint8_t instanceId);
+	DirectedTargetUpdateResult TrySetDirectedTarget(uint8_t instanceId, const NimBLEAddress& target);
 	bool RestartAfterConnection(uint8_t instanceId, std::optional<bool> enable = std::nullopt);
-	void ClearDirectedTargets();
+	bool SetRestartAfterConnection(uint8_t instanceId, bool enable);
+	bool ReconcileDirectedTargets();
 	bool IsDirectedActive();
-	std::optional<NimBLEAddress> DirectedTarget();
 
 	// Lifecycle notifications from the NimBLE callbacks. Pairing/authentication is intentionally
 	// not part of the advertising restart boundary.
@@ -207,6 +236,8 @@ namespace Advertising
 #if CONFIG_BT_NIMBLE_EXT_ADV
 	// Adds and applies a new advertising instance. Fails if the instance id already exists.
 	bool AddInstance(const InstanceConfig& config);
+	// Adds an instance with the same defaults as the serial add-instance command.
+	bool AddDefaultInstance(uint8_t instanceId, std::string_view name);
 	bool RemoveInstance(uint8_t instanceId);
 	std::vector<uint8_t> ListInstances();
 #endif
