@@ -48,7 +48,7 @@ try {
 
 ## Direct web-validation tests
 
-The standalone web-validation test currently runs 60 checks. With the WinLibs
+The standalone native web-validation test currently runs 71 checks. With the WinLibs
 toolchain extracted under `.pio/native-tools/winlibs-16.2.0-ucrt-r2`, compile
 and run it directly from the repository root:
 
@@ -69,9 +69,10 @@ try {
 }
 ```
 
-The executable prints the individual results and a pass/fail total. It checks
-pure validation helpers; it does not exercise the running HTTP server or prove
-all HTTP security behavior.
+The executable prints the individual results and a pass/fail total. The 71 C++
+checks exercise pure validation helpers. They are software checks;
+they do not exercise the device HTTP server, prove HTTP security behavior, or
+verify BLE subscription delivery.
 
 The source-owned extended-advertising transition contract also has a read-only
 static regression. It verifies that explicit C3 stop completion uses the
@@ -82,6 +83,68 @@ ADV_COMPLETE callbacks remain distinct. Run it from PowerShell 7 before a C3 bui
 pwsh -NoProfile -File .\test\verify-advertising-stop-completion.ps1
 ```
 
+## Descriptor fixture validation
+
+Before running the repeatable descriptor-fixture matrix for startup, GATT,
+advertising, or status-serialization changes, run these executable native
+regressions in order:
+
+```powershell
+python test/descriptor_fixture_native/run.py
+python test/descriptor_startup_native/run.py
+python test/web_status_native/run.py
+```
+
+The fixture regression runs seven cases against the actual
+`src/fixtureGatt.cpp`, checks contracts in the pinned installed NimBLE source,
+and proves a known-bad wrong-enum variant fails the normal success case. The
+startup regression runs six cases across legacy and extended advertising
+configurations. It compiles the actual fixture source and extracts the current
+production startup and advertising setup bodies, `GetConfig`/`TrySnapshot`, and
+the readiness-gated rebuild guard. Their native outputs use independent
+folders:
+`.pio/descriptor-fixture/native-regression` and
+`.pio/descriptor-fixture/native-startup`.
+
+The web-status regression extracts the production `operationDataJson`,
+`operationRecordJson`, `statusIsComplete`, `hexValue`, `getStatus`, and `getGatt`
+bodies against installed cJSON. Its two executables are the current code and
+known-bad status-validator/GATT-allocation-check variants, both in one native
+legacy-advertising configuration; they are not separate C3 and WROVER builds.
+The harness supplies a three-target `FixtureGatt::GetValues()` snapshot stub,
+`makeStatus`, and HTTP-response stubs. It checks complete GATT snapshot fields
+and hex values, injects failure at each of the 94 cJSON allocations across
+snapshot construction and serialization, and proves the known-bad variant can
+return an incomplete HTTP 200. Explicit snapshot `Failed` maps to 500 while
+`Busy` and `NotReady` remain 409. It does not run production `GetValues()`, the
+full `makeStatus` snapshot producer, live HTTP routes/authentication, or device
+BLE behavior. Generated native artifacts are retained under
+`.pio/web-status/native`. When invoked by the validation matrix, the runner's
+stdout and stderr are captured in the unique run directory; a direct invocation
+does not write a separate log file. Run it directly with:
+
+```powershell
+python test/web_status_native/run.py
+```
+
+Run the read-only fixture source safety check:
+
+```powershell
+python test/verify-descriptor-fixture.py
+```
+
+Run the repeatable validation matrix:
+
+```powershell
+pwsh -NoProfile -File tools/validate-descriptor-fixture.ps1
+```
+
+Do not run PlatformIO commands concurrently when they share a `.pio` build tree. These
+executable checks complement the static source, browser, and pure software checks. They
+do not establish radio or over-the-air behavior, device HTTP/security behavior,
+central-side descriptor or subscription acceptance, or physical-device acceptance;
+record those separately with the device acceptance checklist.
+
 ## Browser control regression checks
 
 Run the inline browser script against the focused Node DOM stub:
@@ -91,5 +154,6 @@ node .\test\web_ui_regression.cjs
 ```
 
 This checks polling synchronization, preserved edits, worker feedback, pairing
-controls and error recovery. It does not replace the Edge/device acceptance
-checklist or test browser layout.
+controls, GATT byte parsing and publication bounds, scenario prefill, and error
+recovery in a Node DOM stub. It does not test browser layout, device HTTP/security
+behavior, central descriptor operations, or actual subscription delivery.

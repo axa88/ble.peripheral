@@ -7,6 +7,7 @@
 #include "bluetoothManager.h"
 #include "netManager.h"
 #include "pairingCoordinator.h"
+#include "fixtureGatt.h"
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <WiFi.h>
@@ -48,7 +49,7 @@ constexpr size_t kWorkerStackBytes = 6144;
 constexpr uint32_t kPhyTxMask1M = 1;
 constexpr uint32_t kPhyRxMask2M = 2;
 
-enum class Route { Advertising, Security, Bonds, Connections, Mtu };
+enum class Route { Advertising, Security, Bonds, Connections, Mtu, Gatt };
 enum class WorkerOperation
 {
 	SetAdvertisingActive,
@@ -72,7 +73,9 @@ enum class WorkerOperation
 	SetDataLength,
 	RequestPhy,
 	ReadPeerLink,
-	SetPreferredMtu
+	SetPreferredMtu,
+	PublishValue,
+	RestoreValue
 };
 enum class SlotState { Empty, Queued, Running, Done };
 enum class Result { Applied, Accepted, Dispatched, Failed };
@@ -91,6 +94,8 @@ struct WorkerCommand
 	char name[32]{};
 	char address[18]{};
 	char target[26]{};
+	GattValue::Buffer value{};
+	size_t valueLength = 0;
 };
 
 struct OperationData
@@ -112,6 +117,10 @@ struct OperationData
 	bool hasPhy = false;
 	uint8_t txPhy = 0;
 	uint8_t rxPhy = 0;
+	bool hasGatt = false;
+	bool storageVerified = false;
+	bool publicationAttempted = false;
+	bool publicationDispatched = false;
 };
 
 struct WorkerRecord
@@ -427,6 +436,8 @@ std::string_view operationName(const WorkerCommand& command)
 		case WorkerOperation::RequestPhy: return "requestPhy";
 		case WorkerOperation::ReadPeerLink: return "readPeerLink";
 		case WorkerOperation::SetPreferredMtu: return "setPreferred";
+		case WorkerOperation::PublishValue: return "publishValue";
+		case WorkerOperation::RestoreValue: return "restoreValue";
 	}
 	return "unknown";
 }
@@ -575,6 +586,32 @@ Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& co
 	uint32_t value = 0;
 	ConnectionId connection{};
 	bool busy = false;
+
+	if (route == Route::Gatt)
+	{
+		const bool restore = op == "restoreValue";
+		if (!restore && op != "publishValue") return unsupported(detail, "Unknown GATT operation.");
+		std::string_view target, hex;
+		if (!(restore ? hasExactKeys(json, {"op", "targetId"}) : hasExactKeys(json, {"op", "targetId", "hex"})) ||
+			!getString(json, "targetId", target, 25) || !WebValidation::parseId(target, command.connection))
+			return invalid(detail, "A valid opaque targetId and exact request fields are required.");
+		if (!restore && (!getString(json, "hex", hex, kMaxRequestBody, true) ||
+			!GattValue::ParseHex(hex, command.value, command.valueLength)))
+			return invalid(detail, "Expected complete hex byte pairs, at most 256 decoded bytes; empty is allowed.");
+		const auto observed = FixtureGatt::GetValues();
+		if (observed.outcome != FixtureGatt::Outcome::Ready)
+		{
+			detail = observed.detail;
+			return Admission::Busy;
+		}
+		const auto item = std::find_if(observed.values.begin(), observed.values.end(), [&](const auto& entry) { return entry.id == command.connection; });
+		if (item == observed.values.end()) { detail = "GATT target was not found or belongs to another boot."; return Admission::NotFound; }
+		if (!restore && (command.valueLength > item->maxLength || command.valueLength > item->publicationLimit))
+			return invalid(detail, "Value exceeds the stored-value limit or a connected peer's ATT MTU minus 3.");
+		command.operation = restore ? WorkerOperation::RestoreValue : WorkerOperation::PublishValue;
+		setTarget(command, target);
+		return Admission::Ready;
+	}
 
 	if (route == Route::Advertising)
 	{
@@ -886,6 +923,12 @@ cJSON* operationDataJson(const OperationData& data)
 {
 	cJSON* json = cJSON_CreateObject();
 	if (!json) return nullptr;
+	if (data.hasGatt)
+	{
+		cJSON_AddBoolToObject(json, "storageVerified", data.storageVerified);
+		cJSON_AddBoolToObject(json, "publicationAttempted", data.publicationAttempted);
+		cJSON_AddBoolToObject(json, "publicationDispatched", data.publicationDispatched);
+	}
 	if (data.hasStartCounts)
 	{
 		cJSON_AddNumberToObject(json, "started", data.started);
@@ -955,7 +998,7 @@ cJSON* operationRecordJson(const WorkerRecord& record, bool queuedResponse = fal
 			cJSON_AddItemToObject(json, "error", error);
 		}
 	}
-	if (record.data.hasStartCounts || record.data.hasStopCounts || record.data.hasBondCounts || record.data.hasLink)
+	if (record.data.hasStartCounts || record.data.hasStopCounts || record.data.hasBondCounts || record.data.hasLink || record.data.hasGatt)
 		cJSON_AddItemToObject(json, "data", operationDataJson(record.data));
 	return json;
 }
@@ -999,6 +1042,18 @@ ExecutionResult execute(const WorkerCommand& command)
 	auto& manager = BluetoothManager::Instance();
 	switch (command.operation)
 	{
+		case WorkerOperation::PublishValue:
+		case WorkerOperation::RestoreValue:
+		{
+			const auto result = FixtureGatt::ChangeValue(command.connection, command.value, command.valueLength, command.operation == WorkerOperation::RestoreValue);
+			execution.result = result.outcome == FixtureGatt::Outcome::Applied ? Result::Applied : result.outcome == FixtureGatt::Outcome::Dispatched ? Result::Dispatched : Result::Failed;
+			execution.detail = result.detail;
+			execution.data.hasGatt = true;
+			execution.data.storageVerified = result.storageVerified;
+			execution.data.publicationAttempted = result.publicationAttempted;
+			execution.data.publicationDispatched = result.publicationDispatched;
+			break;
+		}
 		case WorkerOperation::SetAdvertisingActive:
 			execution.result = (command.flag ? Advertising::Start(command.instanceId) : Advertising::Stop(command.instanceId)) ? Result::Applied : Result::Failed;
 			break;
@@ -1410,6 +1465,11 @@ bool statusIsComplete(const cJSON* root, const std::vector<Advertising::Instance
 		for (const cJSON* item = lastOperation->child; item; item = item->next) ++count;
 		const cJSON* data = cJSON_GetObjectItemCaseSensitive(lastOperation, "data");
 		const cJSON* error = cJSON_GetObjectItemCaseSensitive(lastOperation, "error");
+		const char* operation = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(lastOperation, "operation"));
+		const char* state = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(lastOperation, "state"));
+		const bool completedGatt = std::strcmp(state, "Done") == 0 &&
+			(std::strcmp(operation, "publishValue") == 0 || std::strcmp(operation, "restoreValue") == 0);
+		if (completedGatt && !hasExactObjectKeys(data, {"storageVerified", "publicationAttempted", "publicationDispatched"})) return false;
 		if (count != 6 + (data ? 1u : 0u) + (error ? 1u : 0u)) return false;
 		if (error)
 		{
@@ -1424,7 +1484,19 @@ bool statusIsComplete(const cJSON* root, const std::vector<Advertising::Instance
 		if (data)
 		{
 			if (!cJSON_IsObject(data) || !hasExactKeys(data, {"started", "stopped", "failed", "blockedByDirectedMode",
-				"deleted", "remaining", "connectionId", "rssiDbm", "txPhy", "rxPhy", "unavailableFields"})) return false;
+				"deleted", "remaining", "connectionId", "rssiDbm", "txPhy", "rxPhy", "unavailableFields",
+				"storageVerified", "publicationAttempted", "publicationDispatched"})) return false;
+			const cJSON* storageVerified = cJSON_GetObjectItemCaseSensitive(data, "storageVerified");
+			const cJSON* publicationAttempted = cJSON_GetObjectItemCaseSensitive(data, "publicationAttempted");
+			const cJSON* publicationDispatched = cJSON_GetObjectItemCaseSensitive(data, "publicationDispatched");
+			if (storageVerified || publicationAttempted || publicationDispatched)
+			{
+				// GATT results form their own complete data shape; do not mix operation families.
+				if (!hasExactObjectKeys(data, {"storageVerified", "publicationAttempted", "publicationDispatched"}) ||
+					!cJSON_IsBool(storageVerified) || !cJSON_IsBool(publicationAttempted) ||
+					!cJSON_IsBool(publicationDispatched)) return false;
+				return true;
+			}
 			const cJSON* started = cJSON_GetObjectItemCaseSensitive(data, "started");
 			const cJSON* stopped = cJSON_GetObjectItemCaseSensitive(data, "stopped");
 			const cJSON* failed = cJSON_GetObjectItemCaseSensitive(data, "failed");
@@ -1452,9 +1524,10 @@ bool statusIsComplete(const cJSON* root, const std::vector<Advertising::Instance
 	return true;
 }
 
-cJSON* makeStatus(bool& snapshotBusy)
+cJSON* makeStatus(bool& snapshotBusy, bool& incompleteResponse)
 {
 	snapshotBusy = false;
+	incompleteResponse = false;
 	std::vector<Advertising::InstanceConfig> advConfigs;
 	std::vector<BluetoothManager::ConnectedPeerSnapshot> peers;
 	if (!Advertising::TrySnapshot(advConfigs) || !BluetoothManager::Instance().TryGetConnectedPeerSnapshots(peers))
@@ -1568,6 +1641,7 @@ cJSON* makeStatus(bool& snapshotBusy)
 	}
 	if (!statusIsComplete(root, advConfigs, peers, bondCount))
 	{
+		incompleteResponse = true;
 		cJSON_Delete(root);
 		return nullptr;
 	}
@@ -1587,10 +1661,12 @@ esp_err_t getStatus(httpd_req_t* request)
 {
 	if (!guardRequest(request, false)) return ESP_OK;
 	bool snapshotBusy = false;
-	cJSON* status = makeStatus(snapshotBusy);
+	bool incompleteResponse = false;
+	cJSON* status = makeStatus(snapshotBusy, incompleteResponse);
 	if (!status)
 	{
 		if (snapshotBusy) sendFailure(request, 409, "Busy", "A short-lived BLE snapshot is busy; retry the status request.");
+		else if (incompleteResponse) sendFailure(request, 500, "Failed", "Status response is incomplete or inconsistent.");
 		else sendFailure(request, 500, "Failed", "Status response allocation failed.");
 		return ESP_OK;
 	}
@@ -1638,6 +1714,65 @@ esp_err_t getPairing(httpd_req_t* request)
 	return ESP_OK;
 }
 
+std::string hexValue(const std::vector<uint8_t>& value)
+{
+	constexpr char digits[] = "0123456789ABCDEF";
+	std::string text;
+	text.reserve(value.size() * 2);
+	for (uint8_t byte : value) { text.push_back(digits[byte >> 4]); text.push_back(digits[byte & 15]); }
+	return text;
+}
+
+esp_err_t getGatt(httpd_req_t* request)
+{
+	if (!guardRequest(request, false)) return ESP_OK;
+	const auto observed = FixtureGatt::GetValues();
+	if (observed.outcome != FixtureGatt::Outcome::Ready)
+	{
+		if (observed.outcome == FixtureGatt::Outcome::Failed)
+			sendFailure(request, 500, "Failed", observed.detail);
+		else
+			sendFailure(request, 409, "Busy", observed.detail);
+		return ESP_OK;
+	}
+	cJSON* json = cJSON_CreateObject();
+	if (!json) { sendJson(request, 500, nullptr); return ESP_OK; }
+	cJSON* values = cJSON_AddArrayToObject(json, "values");
+	if (!values) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
+	for (const auto& entry : observed.values)
+	{
+		cJSON* value = cJSON_CreateObject();
+		if (!value) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
+		if (!cJSON_AddStringToObject(value, "targetId", WebValidation::formatId(entry.id).c_str()) ||
+			!cJSON_AddStringToObject(value, "name", entry.name) ||
+			!cJSON_AddStringToObject(value, "serviceUuid", entry.serviceUuid) ||
+			!cJSON_AddStringToObject(value, "characteristicUuid", entry.characteristicUuid) ||
+			!cJSON_AddBoolToObject(value, "notify", (entry.properties & NIMBLE_PROPERTY::NOTIFY) != 0) ||
+			!cJSON_AddBoolToObject(value, "indicate", (entry.properties & NIMBLE_PROPERTY::INDICATE) != 0) ||
+			!cJSON_AddNumberToObject(value, "maxLength", entry.maxLength) ||
+			!cJSON_AddNumberToObject(value, "publicationLimit", entry.publicationLimit) ||
+			!cJSON_AddStringToObject(value, "currentHex", hexValue(entry.current).c_str()) ||
+			!cJSON_AddStringToObject(value, "baselineHex", hexValue(entry.baseline).c_str()) ||
+			!cJSON_AddBoolToObject(value, "modified", entry.current != entry.baseline))
+		{
+			cJSON_Delete(value);
+			cJSON_Delete(json);
+			sendJson(request, 500, nullptr);
+			return ESP_OK;
+		}
+		if (!cJSON_AddItemToArray(values, value))
+		{
+			cJSON_Delete(value);
+			cJSON_Delete(json);
+			sendJson(request, 500, nullptr);
+			return ESP_OK;
+		}
+	}
+	sendJson(request, 200, json);
+	return ESP_OK;
+}
+
+esp_err_t postGatt(httpd_req_t* request) { if (!guardRequest(request, true)) return ESP_OK; enqueueRoute(request, Route::Gatt); return ESP_OK; }
 esp_err_t postAdvertising(httpd_req_t* request) { if (!guardRequest(request, true)) return ESP_OK; enqueueRoute(request, Route::Advertising); return ESP_OK; }
 esp_err_t postSecurity(httpd_req_t* request) { if (!guardRequest(request, true)) return ESP_OK; enqueueRoute(request, Route::Security); return ESP_OK; }
 esp_err_t postBonds(httpd_req_t* request) { if (!guardRequest(request, true)) return ESP_OK; enqueueRoute(request, Route::Bonds); return ESP_OK; }
@@ -1657,7 +1792,9 @@ bool registerRoutes(httpd_handle_t handle)
 		{ "/api/connections", HTTP_POST, postConnections },
 		{ "/api/mtu", HTTP_POST, postMtu },
 		{ "/api/pairing", HTTP_GET, getPairing },
-		{ "/api/pairing", HTTP_POST, postPairing }
+		{ "/api/pairing", HTTP_POST, postPairing },
+		{ "/api/gatt", HTTP_GET, getGatt },
+		{ "/api/gatt", HTTP_POST, postGatt }
 	};
 	for (const auto& route : routes)
 	{
@@ -1697,7 +1834,7 @@ bool WebInterface::begin()
 		return false;
 	}
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-	config.max_uri_handlers = 9;
+	config.max_uri_handlers = 11;
 	config.max_open_sockets = 4;
 	config.stack_size = 6144;
 	config.max_req_hdr_len = 1024;

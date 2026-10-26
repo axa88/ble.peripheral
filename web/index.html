@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BLE Peripheral</title>
 <style>
-:root{font:15px system-ui,sans-serif;color:#e8eff5;background:#101a23;color-scheme:dark}*{box-sizing:border-box}body{max-width:1200px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:baseline;gap:16px}h1{font-size:1.6rem;margin:0}h2{font-size:1.1rem;margin:0 0 14px}h3{font-size:1rem}p{line-height:1.5}.muted,small{color:#abbccc}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:16px}section{background:#182834;border:1px solid #354959;border-radius:10px;padding:18px;min-width:0}.wide{grid-column:1/-1}.instance-management{border-bottom:1px solid #456171;padding-bottom:10px;margin-bottom:12px}.instance-picker{flex:1 1 250px;max-width:420px}.instance-create label{flex:1 1 150px}.instance-selected{margin-top:12px}.instance-bulk-actions{margin-top:2px}.section-disclosure{margin-top:0}.section-disclosure>summary{font-size:1.1rem;font-weight:600;margin-bottom:14px}label{display:block;margin:10px 0}input,select,button{font:inherit;border:1px solid #567080;border-radius:5px;padding:8px;max-width:100%;background:#11212c;color:inherit}input[type=number]{width:110px}input[type=checkbox]{margin-right:8px}select{width:100%}button{background:#235167;cursor:pointer;margin:5px 5px 5px 0}button:hover{background:#316a83}button:disabled,input:disabled,select:disabled{opacity:.5;cursor:default}button.current-state{background:#285b47;border-color:#8fe3a4;color:#eaffee}button.current-state:disabled{opacity:1}button.inactive-state{background:#4b3b22;border-color:#f0c66e;color:#fff0c8}button.inactive-state:disabled{opacity:1}.danger{background:#673a38}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row label{margin:5px 0}.row input[type=number]{width:100px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px ui-monospace,monospace;margin:8px 0}table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0 16px}td,th{text-align:left;padding:7px 5px;border-bottom:1px solid #354959;overflow-wrap:anywhere}th{color:#abbccc}details{margin-top:12px}summary{cursor:pointer}a{color:#8bcbe4}.state{font-weight:600}.state.active{color:#8fe3a4}.state.inactive{color:#f0c66e}.pair{border-top:1px solid #456171;padding:10px 0}.pair input{width:180px}.pair-instruction{margin:8px 0}.danger-text{color:#ffaaa4}dialog{width:min(560px,calc(100% - 28px));border:2px solid #d66b5e;border-radius:10px;background:#241c1e;color:#fff;padding:20px;box-shadow:0 12px 48px #000b}dialog::backdrop{background:#000b}dialog h2{color:#ffd1ca}dialog .row{justify-content:flex-end}#errorContext{font-weight:600}#errorDetail{overflow-wrap:anywhere}#feedback[data-kind=error]{color:#ffb0a8}#feedback[data-kind=success]{color:#9cebb0}@media(max-width:450px){body{padding:12px}main{grid-template-columns:1fr}header{display:block}}
+:root{font:15px system-ui,sans-serif;color:#e8eff5;background:#101a23;color-scheme:dark}*{box-sizing:border-box}body{max-width:1200px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:baseline;gap:16px}.device-identification{display:grid;gap:2px;text-align:right}h1{font-size:1.6rem;margin:0}h2{font-size:1.1rem;margin:0 0 14px}h3{font-size:1rem}p{line-height:1.5}.muted,small{color:#abbccc}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:16px}section{background:#182834;border:1px solid #354959;border-radius:10px;padding:18px;min-width:0}.wide{grid-column:1/-1}.instance-management{border-bottom:1px solid #456171;padding-bottom:10px;margin-bottom:12px}.instance-picker{flex:1 1 250px;max-width:420px}.instance-create label{flex:1 1 150px}.instance-selected{margin-top:12px}.instance-bulk-actions{margin-top:2px}.section-disclosure{margin-top:0}.section-disclosure>summary{font-size:1.1rem;font-weight:600;margin-bottom:14px}label{display:block;margin:10px 0}input,select,button{font:inherit;border:1px solid #567080;border-radius:5px;padding:8px;max-width:100%;background:#11212c;color:inherit}input[type=number]{width:110px}input[type=checkbox]{margin-right:8px}select{width:100%}button{background:#235167;cursor:pointer;margin:5px 5px 5px 0}button:hover{background:#316a83}button:disabled,input:disabled,select:disabled{opacity:.5;cursor:default}button.current-state{background:#285b47;border-color:#8fe3a4;color:#eaffee}button.current-state:disabled{opacity:1}button.inactive-state{background:#4b3b22;border-color:#f0c66e;color:#fff0c8}button.inactive-state:disabled{opacity:1}.danger{background:#673a38}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row label{margin:5px 0}.row input[type=number]{width:100px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px ui-monospace,monospace;margin:8px 0}table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0 16px}td,th{text-align:left;padding:7px 5px;border-bottom:1px solid #354959;overflow-wrap:anywhere}th{color:#abbccc}details{margin-top:12px}summary{cursor:pointer}a{color:#8bcbe4}.state{font-weight:600}.state.active{color:#8fe3a4}.state.inactive{color:#f0c66e}.pair{border-top:1px solid #456171;padding:10px 0}.pair input{width:180px}.pair-instruction{margin:8px 0}.danger-text{color:#ffaaa4}dialog{width:min(560px,calc(100% - 28px));border:2px solid #d66b5e;border-radius:10px;background:#241c1e;color:#fff;padding:20px;box-shadow:0 12px 48px #000b}dialog::backdrop{background:#000b}dialog h2{color:#ffd1ca}dialog .row{justify-content:flex-end}#errorContext{font-weight:600}#errorDetail{overflow-wrap:anywhere}#feedback[data-kind=error]{color:#ffb0a8}#feedback[data-kind=success]{color:#9cebb0}@media(max-width:450px){body{padding:12px}main{grid-template-columns:1fr}header{display:block}.device-identification{text-align:left;margin-top:6px}}
 </style>
 </head>
 <body>
-<header><h1>BLE Peripheral</h1><span id="connection" class="muted" role="status">Connecting...</span></header>
+<header><h1>BLE Peripheral</h1><div class="device-identification"><span id="connection" class="muted" role="status">Connecting...</span><span id="deviceAddress" class="muted">Bluetooth address: connecting...</span></div></header>
 <p class="muted">Control this peripheral on your trusted LAN. Pairing requests expire independently of this page.</p>
 <main>
 <section><h2>Advertising</h2>
@@ -39,6 +39,20 @@
 <label>Data length (27-251 octets)<input id="octets" type="number" min="27" max="251" value="251"></label><button id="setDataLength" data-worker-action>Request data length</button><button id="requestPhy" data-worker-action>Request PHY (TX 1M / RX 2M)</button><p id="phyHelp" class="muted">PHY support is being checked.</p></section>
 <section class="wide"><details class="section-disclosure"><summary>Operation</summary><pre id="feedback" role="status" aria-live="polite">Waiting for device status.</pre><pre id="lastOperation">No queued operation.</pre><pre id="operationData"></pre></details></section>
 <section class="wide"><details class="section-disclosure"><summary>Overview</summary><pre id="overview">Waiting for device status.</pre><div id="advertisements"></div><div id="connectionTable"></div><details><summary>Resource observations</summary><pre id="resources">Waiting for measurements.</pre></details></details></section>
+<section class="wide"><h2>GATT Controls</h2>
+<label>Characteristic<select id="gattTarget"></select></label><pre id="gattIdentity"></pre>
+<p>Current value (hex)</p><pre id="gattCurrent">Unavailable</pre><p>Baseline (hex)</p><pre id="gattBaseline">Unavailable</pre>
+<p id="gattState" role="status">Unknown / unavailable</p><p id="gattLimit" class="muted"></p>
+<label>Value to publish (hex; empty allowed)<input id="gattHex" type="text" maxlength="1024" autocomplete="off" spellcheck="false" style="width:100%"></label>
+<p id="gattDraftStatus" role="status" aria-live="polite">Draft unavailable. Select a current target to enable Send.</p>
+<button id="gattPublish" data-worker-action disabled>Send value</button><button id="gattRestore" data-worker-action disabled>Restore baseline</button>
+<p class="muted">Send requests delivery to subscribers; verify receipt on the BLE client. Restore stores and verifies the full baseline without publishing, even when it exceeds the current send limit. Selections and scenario prefill do not change the device.</p>
+</section>
+<section class="wide"><details class="section-disclosure"><summary>GATT Test Scenarios</summary>
+<p class="muted">Use a BLE central with fresh discovery. These are instructions and expected data, not observed test results. Avoid concurrent writes to the same target. Restore baseline explicitly before canonical-value tests.</p>
+<label>Scenario<select id="gattScenario"></select></label><pre id="gattScenarioInfo"></pre>
+<button id="gattPrefill" disabled>Fill GATT Controls</button>
+</details></section>
 </main>
 <dialog id="errorDialog" aria-labelledby="errorTitle" aria-describedby="errorContext errorDetail" aria-modal="true">
 <h2 id="errorTitle">Request failed</h2><p id="errorContext"></p><p id="errorDetail" role="alert"></p>
@@ -51,6 +65,19 @@ const element=(tag,text)=>{const node=document.createElement(tag);if(text!==unde
 let status=null,csrf='',polling=false,lastPeer='',lastAdvSelection='',lastVisibleOperationId='',lastSeenWorkerOperationId='';
 let localWorkerBusy=false,localPendingOperationId='',localPreviousOperationId='';
 let restartPolicyPending=null;
+let gattValues=[],lastGattSelection='',gattAvailable=false;
+const fixtureUuid=suffix=>'12345678-1234-5678-1234-56789abc'+suffix;
+const scalarFixtures=[['df01','Exponent Zero','00','235'],['df02','Exponent Positive','7F','235 x 10^127'],['df03','Exponent Negative Minimum','80','235 x 10^-128'],['df04','Exponent Negative Two','FE','2.35'],['df05','Temperature Scalar','FF','23.5']];
+const gattScenarios=[
+ {name:'User Descriptions',text:()=> 'Central only: discover service '+fixtureUuid('df00')+' and READ each 0x2901. Compare exact UTF-8 bytes (no trailing NUL) and parent:\r\n'+scalarFixtures.concat([['df06','Aggregate Value'],['df07','Temperature Update Trigger']]).map(row=>fixtureUuid(row[0])+': '+row[1]).join('\r\n')+'\r\nPass: all seven exact READ-only strings; a descriptor write request is rejected with no change. Original '+fixtureUuid('def1')+' has no 0x2901.'},
+ {name:'Presentation Formats and signed exponents',text:()=> 'Central only: READ these five values (EB 00, sint16 raw 235) and their 0x2904:\r\n'+scalarFixtures.map(row=>fixtureUuid(row[0])+': 0E '+row[2]+' 2F 27 01 00 00 -> '+row[3]+' degrees Celsius').join('\r\n')+'\r\nPass: exact CPF bytes; signed exponents 0, 127, -128, -2, -1. Record native projection separately from interpretation; preserve precision at extreme exponents. Restore Temperature Scalar baseline before this test.'},
+ {name:'Aggregate Format',text:()=> 'Central only: '+fixtureUuid('df06')+' value EB 00 2A; local 0x2904 = 04 00 00 27 01 00 00. READ 0x2905: two uint16 little-endian handles, first '+fixtureUuid('df05')+'.0x2904, second '+fixtureUuid('df06')+'.0x2904. Compare with boot handle log. Pass: authoritative mapping gives [23.5 degrees Celsius, 42] in that order. Handle-opaque clients must report unresolved, never guess or interpret the whole value using only the local CPF. Temperature changes do not change AggregateValue.'},
+ {name:'Valid Range',text:()=> 'Central only: '+fixtureUuid('df04')+' value EB 00; CPF 0E FE 2F 27 01 00 00; READ-only 0x2906 = 70 FE E8 03. Pass: raw signed-16 bounds -400 and 1000; apply parent exponent -2 for inclusive -4.00 to 10.00 degrees Celsius; baseline 2.35 is inside. No runtime range enforcement is provided.'},
+ {name:'Descriptor absence',text:()=> 'Central only: discover '+fixtureUuid('def1')+' (readable original value) and '+fixtureUuid('df07')+' (WRITE-only trigger): neither has 0x2904 or 0x2905; trigger has 0x2901 but original has none. '+fixtureUuid('df01')+' has 0x2901 and 0x2904 but no 0x2906. Pass: exact absence on the correct parents; never borrow neighboring metadata.'},
+ {name:'Temperature read and update',suffix:'df05',hex:'F5 00',text:()=> 'Target '+fixtureUuid('df05')+'. Restore baseline explicitly; central READ returns EB 00 (23.5 degrees Celsius). Subscribe, then WRITE acknowledged 01 to '+fixtureUuid('df07')+': update retains current bytes. Alternatively fill controls and Send notification with F5 00: pass if read and received bytes equal F5 00 (24.5 degrees Celsius). Unsubscribe and trigger again: no receipt. Restore does not publish. Other accepted trigger bytes do not publish; invalid ATT lengths may be rejected.'},
+ {name:'Original notification',suffix:'def2',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def2')+'. Subscribe via the central, fill controls and Send notification. Pass: received update and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Restore baseline explicitly; read ASCII Notify Characteristic and observe no restore update. Generic publication is not a central ATT write and does not invoke the original trigger callback.'},
+ {name:'Original indication',suffix:'def3',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def3')+'. Subscribe for indications via the central, fill controls and Send indication. Pass: received indication and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Verify client acknowledgement separately from server dispatch. Restore baseline explicitly; read ASCII Indicate Characteristic and observe no restore update.'}
+];
 const pairNodes=new Map();
 const submittedFields=new Map();
 const shownPollErrors=new Map();
@@ -61,7 +88,7 @@ const operationLabels={
  setCapabilities:'Set pairing I/O',setAuthentication:'Set security flag',setKeyDistribution:'Set key distribution',
  deleteConnection:'Delete bond',deleteAll:'Delete all bonds',disconnect:'Disconnect peer',disconnectAll:'Disconnect all peers',
  readPeerLink:'Read peer link',requestPhy:'Request PHY',setDataLength:'Request data length',setConnectionParameters:'Request connection parameters',
- setPreferred:'Set preferred MTU',enterPasskey:'Submit passkey',confirm:'Submit numeric confirmation'
+ setPreferred:'Set preferred MTU',enterPasskey:'Submit passkey',confirm:'Submit numeric confirmation',publishValue:'Publish GATT value',restoreValue:'Restore GATT baseline'
 };
 const supportedFailureResults=new Set(['Failed','InvalidArgument','Unsupported','Busy']);
 const number=id=>{const field=$(id);if(!field.checkValidity()||!Number.isInteger(Number(field.value))||field.value==='')throw Error('Enter a valid '+id+' value.');return Number(field.value);};
@@ -202,6 +229,82 @@ function renderTable(hostId,headers,rows){
  for(const values of rows){const row=element('tr');for(const value of values)row.append(element('td',String(value)));table.append(row);}
  $(hostId).replaceChildren(table);
 }
+function spacedHex(text){return (String(text).match(/../g)||[]).join(' ');}
+function selectedGatt(){return gattAvailable?gattValues.find(item=>item.targetId===$('gattTarget').value):undefined;}
+const gattHexPattern=/^(?:[ \t\r\n\f\v]*[0-9a-fA-F]{2})*[ \t\r\n\f\v]*$/;
+function gattDraftByteCount(text){return gattHexPattern.test(text)?text.replace(/[ \t\r\n\f\v]/g,'').length/2:null;}
+function parseGattHex(text){
+ if(gattDraftByteCount(text)===null)throw Error('Enter complete hexadecimal byte pairs; whitespace is allowed between bytes.');
+ const hex=text.replace(/[ \t\r\n\f\v]/g,'').toUpperCase();
+ if(hex.length>512)throw Error('Payload is '+(hex.length/2)+' bytes; the Web payload limit is 256 bytes.');
+ return hex;
+}
+function effectiveGattSendLimit(item){
+ const maxLength=Number(item.maxLength),publicationLimit=Number(item.publicationLimit);
+ return Math.max(0,Math.min(256,Number.isFinite(maxLength)?maxLength:0,Number.isFinite(publicationLimit)?publicationLimit:0));
+}
+function gattSendLimitReason(item){
+ const maxLength=Number(item.maxLength),localLimit=Math.min(256,Number.isFinite(maxLength)?Math.max(0,maxLength):0);
+ const publicationLimit=Number(item.publicationLimit);
+ if(Number.isFinite(publicationLimit)&&publicationLimit<localLimit)return 'connected-peer publication limit';
+ return Number.isFinite(maxLength)&&maxLength<256?'stored maximum':'Web cap';
+}
+function updateGattDraft(item=selectedGatt()){
+ const field=$('gattHex'),statusNode=$('gattDraftStatus');
+ if(!item){statusNode.textContent='Draft unavailable. Select a current target to enable Send.';return false;}
+ const count=gattDraftByteCount(field.value),limit=effectiveGattSendLimit(item);
+ if(count===null){statusNode.textContent='Draft is invalid hexadecimal. Use complete byte pairs. Send is disabled.';return false;}
+ if(count<=limit){statusNode.textContent='Payload: '+count+' bytes. Send limit: '+limit+' bytes.';return true;}
+ const reason=gattSendLimitReason(item);
+ let message='Payload: '+count+' bytes; send limit: '+limit+' bytes ('+(count-limit)+' too long; limited by '+reason+'). Send is disabled.';
+ const compact=field.value.replace(/[ \t\r\n\f\v]/g,'').toUpperCase();
+ const baseline=String(item.baselineHex||'').replace(/[ \t\r\n\f\v]/g,'').toUpperCase();
+ if(compact===baseline){
+  message+=' Restore stores all '+count+' baseline bytes without publishing.';
+  if(reason==='connected-peer publication limit')
+   message+=' A payload this size needs a negotiated ATT MTU of at least '+Math.max(23,count+3)+' on every connected peer.';
+ }
+ statusNode.textContent=message;
+ return false;
+}
+function renderGattSelection(){
+ const item=selectedGatt(),changed=lastGattSelection!==$('gattTarget').value;
+ if(changed){lastGattSelection=$('gattTarget').value;$('gattHex').dataset.dirty='false';$('gattHex').dataset.editVersion=String((Number($('gattHex').dataset.editVersion)||0)+1);}
+ $('gattIdentity').textContent=item?'Service: '+item.serviceUuid+'\r\nCharacteristic: '+item.characteristicUuid+'\r\nInstance: '+item.targetId+'\r\nProperties: READ'+(item.characteristicUuid===fixtureUuid('df05')?'':' | WRITE')+(item.notify?' | NOTIFY':' | INDICATE'):'';
+ $('gattCurrent').textContent=item?(spacedHex(item.currentHex)||'(empty)'):'Unavailable';
+ $('gattBaseline').textContent=item?(spacedHex(item.baselineHex)||'(empty)'):'Unavailable';
+ $('gattState').textContent=!item?'Unknown / unavailable':item.modified?'Modified: current value differs from baseline. Canonical-value tests require restoration.':'Baseline';
+ $('gattLimit').textContent=item?'Send limit: '+effectiveGattSendLimit(item)+' bytes. Stored maximum: '+item.maxLength+'; Web cap: 256; peer limit includes all connected peers, even unsubscribed.':'';
+ $('gattPublish').textContent=item&&item.indicate?'Send indication':'Send notification';
+ if(item)syncField('gattHex',spacedHex(item.currentHex),changed);
+ updateGattDraft(item);
+}
+function renderGatt(data){
+ gattAvailable=!!data;
+ if(data){gattValues=data.values||[];options('gattTarget',gattValues.map(item=>[item.targetId,item.name+' - '+item.characteristicUuid]));}
+ renderGattSelection();renderGattScenario();if(status)setWorkerAvailability(status);
+}
+function renderGattScenario(){
+ const scenario=gattScenarios[Number($('gattScenario').value)||0];
+ $('gattScenarioInfo').textContent=scenario.text();
+ $('gattPrefill').disabled=!gattAvailable||!scenario.suffix||!gattValues.some(item=>item.characteristicUuid===fixtureUuid(scenario.suffix));
+}
+function prefillGatt(){
+ const scenario=gattScenarios[Number($('gattScenario').value)||0];
+ const target=gattValues.find(item=>scenario.suffix&&item.characteristicUuid===fixtureUuid(scenario.suffix));
+ if(!gattAvailable||!target)return;
+ $('gattTarget').value=target.targetId;renderGattSelection();$('gattHex').value=scenario.hex;markDirty(['gattHex']);updateGattDraft(target);
+ if(status)setWorkerAvailability(status);
+}
+function publishGatt(){
+ const item=selectedGatt();if(!item)throw Error('Wait for a current GATT target.');
+ const draft=$('gattHex').value,count=gattDraftByteCount(draft),limit=effectiveGattSendLimit(item);
+ if(count===null){updateGattDraft(item);throw Error('Enter complete hexadecimal byte pairs; nothing was sent.');}
+ if(count>limit){updateGattDraft(item);throw Error('Cannot send '+count+' bytes; send limit is '+limit+' bytes ('+gattSendLimitReason(item)+').');}
+ const hex=parseGattHex(draft);
+ $('gattHex').value=spacedHex(hex);markDirty(['gattHex']);
+ return post('gatt','publishValue',{targetId:item.targetId,hex},['gattHex']);
+}
 function renderSelection(){
  if(!status)return;
  const adv=(status.advertising||[]).find(item=>String(item.instanceId)===$('adv').value);
@@ -298,6 +401,10 @@ function renderOverview(data){
 function setWorkerAvailability(data){
  const operation=data.lastOperation,busy=localWorkerBusy||!!operation&&(operation.state==='Queued'||operation.state==='Running');
  for(const control of document.querySelectorAll('[data-worker-action]'))control.disabled=busy||!csrf;
+ const gatt=selectedGatt();
+  const gattDraftCanSend=updateGattDraft(gatt);
+  $('gattPublish').disabled=busy||!csrf||!gatt||!gattDraftCanSend;
+ $('gattRestore').disabled=busy||!csrf||!gatt;
  const advertising=data.advertising||[],bonds=data.bonds||[],connections=data.connections||[],caps=data.capabilities||{};
  const adv=advertising.find(item=>String(item.instanceId)===$('adv').value);
  const peer=connections.find(item=>item.connectionId===$('peer').value);
@@ -337,10 +444,11 @@ function setWorkerAvailability(data){
 }
 function renderStatus(data){
  const previousToken=csrf;status=data;csrf=data.csrfToken||'';
- if(previousToken&&csrf&&previousToken!==csrf){for(const id of submittedFields.keys())clearSubmittedFields(id);lastSeenWorkerOperationId='';lastVisibleOperationId='';localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';restartPolicyPending=null;}
+ if(previousToken&&csrf&&previousToken!==csrf){for(const id of submittedFields.keys())clearSubmittedFields(id);lastSeenWorkerOperationId='';lastVisibleOperationId='';localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';restartPolicyPending=null;gattAvailable=false;}
  observeWorker(data.lastOperation);
  const device=data.device||{},network=data.network||{},caps=data.capabilities||{},ads=data.advertising||[],bonds=data.bonds||[],peers=data.connections||[];
  $('connection').textContent=(device.name||'Peripheral')+' - '+(network.ip||'network unavailable');
+ $('deviceAddress').textContent='Bluetooth address: '+(device.address||'unavailable');
  options('adv',ads.map(item=>[item.instanceId,item.instanceId+' - '+item.name]));
  resetAdvertisingDraftOnSwitch();
  const targetEntries=[['','No directed target assigned',!((bonds||[]).length)]];
@@ -444,9 +552,18 @@ async function poll(){
   catch(error){$('connection').textContent='Status unavailable: '+error.message;showPollError('Status',error);}
   try{renderPairing(await jsonFetch('/api/pairing'));shownPollErrors.delete('Pairing status');}
   catch(error){$('pairingCapability').textContent='Pairing state is temporarily unavailable.';showPollError('Pairing status',error);}
+  try{renderGatt(await jsonFetch('/api/gatt'));shownPollErrors.delete('GATT status');}
+  catch(error){renderGatt(null);showPollError('GATT status',error);}
  }finally{polling=false;setTimeout(poll,1500);}
 }
 function installHandlers(){
+ options('gattScenario',gattScenarios.map((scenario,i)=>[i,scenario.name]));renderGattScenario();
+ $('gattScenario').onchange=renderGattScenario;
+ $('gattPrefill').onclick=prefillGatt;
+ $('gattTarget').onchange=()=>{renderGattSelection();if(status)setWorkerAvailability(status);};
+ $('gattHex').oninput=()=>{markDirty(['gattHex']);if(status)setWorkerAvailability(status);else updateGattDraft();};
+ $('gattPublish').onclick=()=>invoke(publishGatt);
+ $('gattRestore').onclick=()=>invoke(()=>{const item=selectedGatt();if(!item)throw Error('Wait for a current GATT target.');return post('gatt','restoreValue',{targetId:item.targetId});});
  $('adv').onchange=()=>{resetAdvertisingDraftOnSwitch();renderSelection();if(status)setWorkerAvailability(status);};$('peer').onchange=()=>{renderSelection();if(status)setWorkerAvailability(status);};
  $('start').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:true});});
  $('stop').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:false});});

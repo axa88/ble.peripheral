@@ -1,5 +1,6 @@
 // advertising.cpp
 #include "advertising.h"
+#include "fixtureGatt.h"
 #include <Arduino.h>
 #include <algorithm>
 #include <map>
@@ -223,7 +224,7 @@ namespace
 			Serial.println("[ERR] Failed to set discoverable mode");
 
 		if (wasOn && restartIfActive)
-			return adv->start(limitedTimeoutMs(cfg.discoverable));
+			return FixtureGatt::Ready() && adv->start(limitedTimeoutMs(cfg.discoverable));
 		return true;
 	}
 
@@ -244,7 +245,7 @@ namespace
 			return false;
 		if (!adv->setDiscoverableMode(BLE_GAP_DISC_MODE_NON))
 			return false;
-		return adv->start(0, &target);
+		return FixtureGatt::Ready() && adv->start(0, &target);
 	}
 
 	void restoreLegacyOrdinaryLocked()
@@ -327,13 +328,16 @@ namespace
 			return false;
 
 		if (wasOn && restartIfActive)
-			return adv->start(cfg.id, static_cast<int>(limitedTimeoutMs(cfg.discoverable)), 0);
+			return FixtureGatt::Ready() && adv->start(cfg.id, static_cast<int>(limitedTimeoutMs(cfg.discoverable)), 0);
 		return true;
 	}
 #endif
 
 	bool rebuildAdvertisement(const Advertising::InstanceConfig& cfg, bool restartIfActive)
 	{
+		// Extended setInstanceData() implicitly starts the GATT server. Keep configuration visible without applying it before fixture finalization.
+		if (!FixtureGatt::Ready())
+			return false;
 #if CONFIG_BT_NIMBLE_EXT_ADV
 		return applyExtendedDataLocked(cfg, restartIfActive);
 #else
@@ -527,6 +531,11 @@ namespace
 
 	bool startInstanceLocked(uint8_t instanceId)
 	{
+		if (!FixtureGatt::Ready())
+		{
+			Serial.println("[ERR] Advertising blocked: GATT fixture is not ready");
+			return false;
+		}
 		auto it = configs_.find(instanceId);
 		if (it == configs_.end())
 		{
@@ -768,7 +777,7 @@ namespace Advertising
 		cancelRestartLocked(stored.id, "configuration changed");
 		cancelRestartTimer(stored.id);
 		configs_[stored.id] = stored;
-		if (!modeIsDirected(stored.mode) || stored.directedTarget.has_value())
+		if (FixtureGatt::Ready() && (!modeIsDirected(stored.mode) || stored.directedTarget.has_value()))
 			rebuildAdvertisement(stored, false);
 	}
 

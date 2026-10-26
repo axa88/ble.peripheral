@@ -1,5 +1,6 @@
 #include "../../src/webValidation.h"
 #include "../../src/bleValidation.h"
+#include "../../src/gattValue.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string_view>
@@ -126,6 +127,25 @@ void testIdsAndAddresses()
 	check(!WebValidation::normalizeMac("AA-BB-CC-00-12-EF", mac), "bond-address-rejects-noncanonical-separators");
 	check(!WebValidation::normalizeMac("A:BB:CC:00:12:EF", mac), "bond-address-rejects-short-octet");
 }
+
+void testGattHex()
+{
+	GattValue::Buffer bytes{};
+	size_t length = 999;
+	check(GattValue::ParseHex("", bytes, length) && length == 0, "gatt-empty-value");
+	check(GattValue::ParseHex(" \t\r\n\f\v", bytes, length) && length == 0, "gatt-empty-whitespace");
+	check(GattValue::ParseHex(" 00 eb\tF500 \r\n", bytes, length) && length == 4 &&
+		bytes[0] == 0 && bytes[1] == 0xEB && bytes[2] == 0xF5 && bytes[3] == 0, "gatt-binary-and-mixed-case");
+	check(!GattValue::ParseHex("0", bytes, length), "gatt-odd-digit-rejected");
+	check(!GattValue::ParseHex("0 1", bytes, length), "gatt-split-byte-rejected");
+	check(!GattValue::ParseHex("00 0G", bytes, length), "gatt-invalid-digit-rejected");
+	check(!GattValue::ParseHex("0x01", bytes, length), "gatt-hex-prefix-rejected");
+	check(!GattValue::ParseHex("01,02", bytes, length), "gatt-punctuation-rejected");
+	check(!GattValue::ParseHex(std::string_view("00\0FF", 5), bytes, length), "gatt-embedded-nul-rejected");
+	check(GattValue::ParseHex(std::string(512, 'A'), bytes, length) && length == 256 && bytes[255] == 0xAA,
+		"gatt-exact-payload-cap");
+	check(!GattValue::ParseHex(std::string(514, 'A'), bytes, length), "gatt-over-cap-rejected");
+}
 }
 
 int main()
@@ -142,6 +162,7 @@ int main()
 	testFlatJsonObject();
 	testBasicAuth();
 	testIdsAndAddresses();
+	testGattHex();
 	std::printf("%u passed, %u failed\n", passed, failed);
 	return failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

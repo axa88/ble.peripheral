@@ -2,6 +2,12 @@
 
 #include <NimBLEDevice.h>
 #include <cstdint>
+#include "bleConfig.h"
+#if BLE_ENABLE_WEB_INTERFACE
+#include "connectionId.h"
+#include "gattValue.h"
+#include <vector>
+#endif
 
 namespace FixtureGatt
 {
@@ -18,6 +24,38 @@ namespace FixtureGatt
 	inline constexpr uint8_t UpdateTrigger = 0x01;
 	inline constexpr char NotificationPayload[] = "notify-event";
 	inline constexpr char IndicationPayload[] = "indicate-event";
+	inline constexpr char DescriptorServiceUuid[] = "12345678-1234-5678-1234-56789abcdf00";
+	inline constexpr char TemperatureUuid[] = "12345678-1234-5678-1234-56789abcdf05";
 
 	NimBLECharacteristic* Create(NimBLEServer& server);
+	bool Finalize();
+	bool Ready();
+
+#if BLE_ENABLE_WEB_INTERFACE
+	struct ValueSnapshot
+	{
+		ConnectionId id{};
+		const char* name = nullptr;
+		const char* serviceUuid = nullptr;
+		const char* characteristicUuid = nullptr;
+		uint16_t properties = 0;
+		size_t maxLength = 0;
+		size_t publicationLimit = 0;
+		std::vector<uint8_t> current;
+		std::vector<uint8_t> baseline;
+	};
+	enum class Outcome { Ready, Applied, Dispatched, NotReady, NotFound, InvalidArgument, Busy, Failed };
+	struct WebResult
+	{
+		Outcome outcome = Outcome::Failed;
+		const char* detail = "GATT operation failed.";
+		bool storageVerified = false;
+		bool publicationAttempted = false;
+		bool publicationDispatched = false;
+		std::vector<ValueSnapshot> values;
+	};
+	// Called only from HTTP/worker tasks. Value access is marshalled to the BLE host.
+	WebResult GetValues();
+	WebResult ChangeValue(ConnectionId id, const GattValue::Buffer& bytes, size_t length, bool restore);
+#endif
 }

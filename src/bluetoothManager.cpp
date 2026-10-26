@@ -724,12 +724,6 @@ void BluetoothManager::SetupBluetooth()
 
 	// NimBLEDevice::setCustomGapHandler(evalGapHandler, nullptr);
 
-	// Create server and the deterministic GATT fixture.
-	server_ = NimBLEDevice::createServer();
-	server_->setCallbacks(new ServerCallbacks(*this));
-	(void)FixtureGatt::Create(*server_);
-	server_->start();
-
 	// Advertising - instance 0 setup delegated to the Advertising:: module (advertising.h/.cpp),
 	// which owns the full instance config and is the single place that rebuilds/applies
 	// advertisement data (fixes the previous setInstanceData() partial-replace issue).
@@ -756,6 +750,33 @@ void BluetoothManager::SetupBluetooth()
 	instance0.manufacturerData = { 0xFF, 0xFF, 'B', 'e', 'B', 'o' };
 
 	Advertising::Setup(instance0);
+
+	// Create server and the deterministic GATT fixture.
+	server_ = NimBLEDevice::createServer();
+	if (!server_)
+	{
+		Serial.println("[ERR] GATT server allocation failed; advertising blocked until reboot");
+		return;
+	}
+	server_->setCallbacks(new ServerCallbacks(*this));
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+	server_->advertiseOnDisconnect(false);
+#endif
+	if (!FixtureGatt::Create(*server_))
+	{
+		Serial.println("[ERR] GATT fixture creation failed; advertising blocked until reboot");
+		return;
+	}
+	if (!server_->start())
+	{
+		Serial.println("[ERR] GATT registration failed; advertising blocked until reboot");
+		return;
+	}
+	if (!FixtureGatt::Finalize())
+	{
+		Serial.println("[ERR] GATT descriptor finalization failed; advertising blocked until reboot");
+		return;
+	}
 
 	if (Advertising::Start(0))
 		Serial.printf("[BT] Advertising started as \"%s\"\n", deviceName_.c_str());
