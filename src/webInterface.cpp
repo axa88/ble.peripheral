@@ -8,6 +8,7 @@
 #include "netManager.h"
 #include "pairingCoordinator.h"
 #include "fixtureGatt.h"
+#include "firmwareIdentity.h"
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <WiFi.h>
@@ -74,8 +75,7 @@ enum class WorkerOperation
 	RequestPhy,
 	ReadPeerLink,
 	SetPreferredMtu,
-	PublishValue,
-	RestoreValue
+	PublishValue
 };
 enum class SlotState { Empty, Queued, Running, Done };
 enum class Result { Applied, Accepted, Dispatched, Failed };
@@ -129,7 +129,7 @@ struct WorkerRecord
 	WorkerCommand command{};
 	SlotState state = SlotState::Empty;
 	std::optional<Result> result;
-	char detail[96]{};
+	char detail[256]{};
 	char errorCode[48]{};
 	bool errorHasInstanceId = false;
 	uint8_t errorInstanceId = 0;
@@ -140,7 +140,7 @@ struct ExecutionResult
 {
 	Result result = Result::Failed;
 	OperationData data{};
-	const char* detail = "Operation failed.";
+	std::string detail = "Operation failed.";
 	const char* errorCode = nullptr;
 	std::optional<uint8_t> errorInstanceId;
 };
@@ -437,7 +437,6 @@ std::string_view operationName(const WorkerCommand& command)
 		case WorkerOperation::ReadPeerLink: return "readPeerLink";
 		case WorkerOperation::SetPreferredMtu: return "setPreferred";
 		case WorkerOperation::PublishValue: return "publishValue";
-		case WorkerOperation::RestoreValue: return "restoreValue";
 	}
 	return "unknown";
 }
@@ -544,19 +543,19 @@ bool targetBondExists(const std::array<char, 18>& normalizedAddress, uint8_t add
 	return false;
 }
 
-Admission invalid(const char*& detail, const char* message)
+Admission invalid(std::string& detail, const char* message)
 {
 	detail = message;
 	return Admission::InvalidArgument;
 }
 
-Admission unsupported(const char*& detail, const char* message)
+Admission unsupported(std::string& detail, const char* message)
 {
 	detail = message;
 	return Admission::Unsupported;
 }
 
-Admission checkAdvertisingTarget(const cJSON* json, WorkerCommand& command, const char*& detail,
+Admission checkAdvertisingTarget(const cJSON* json, WorkerCommand& command, std::string& detail,
 	std::vector<Advertising::InstanceConfig>& configs, const Advertising::InstanceConfig*& config)
 {
 	uint32_t id = 0;
@@ -577,7 +576,7 @@ Admission checkAdvertisingTarget(const cJSON* json, WorkerCommand& command, cons
 	return Admission::Ready;
 }
 
-Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& command, const char*& detail)
+Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& command, std::string& detail)
 {
 	std::string_view op;
 	if (!getString(json, "op", op, 40)) return invalid(detail, "Operation name is required.");
@@ -589,14 +588,13 @@ Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& co
 
 	if (route == Route::Gatt)
 	{
-		const bool restore = op == "restoreValue";
-		if (!restore && op != "publishValue") return unsupported(detail, "Unknown GATT operation.");
+		if (op != "publishValue") return unsupported(detail, "Unknown GATT operation.");
 		std::string_view target, hex;
-		if (!(restore ? hasExactKeys(json, {"op", "targetId"}) : hasExactKeys(json, {"op", "targetId", "hex"})) ||
+		if (!hasExactKeys(json, {"op", "targetId", "hex"}) ||
 			!getString(json, "targetId", target, 25) || !WebValidation::parseId(target, command.connection))
 			return invalid(detail, "A valid opaque targetId and exact request fields are required.");
-		if (!restore && (!getString(json, "hex", hex, kMaxRequestBody, true) ||
-			!GattValue::ParseHex(hex, command.value, command.valueLength)))
+		if (!getString(json, "hex", hex, kMaxRequestBody, true) ||
+			!GattValue::ParseHex(hex, command.value, command.valueLength))
 			return invalid(detail, "Expected complete hex byte pairs, at most 256 decoded bytes; empty is allowed.");
 		const auto observed = FixtureGatt::GetValues();
 		if (observed.outcome != FixtureGatt::Outcome::Ready)
@@ -606,9 +604,26 @@ Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& co
 		}
 		const auto item = std::find_if(observed.values.begin(), observed.values.end(), [&](const auto& entry) { return entry.id == command.connection; });
 		if (item == observed.values.end()) { detail = "GATT target was not found or belongs to another boot."; return Admission::NotFound; }
-		if (!restore && (command.valueLength > item->maxLength || command.valueLength > item->publicationLimit))
-			return invalid(detail, "Value exceeds the stored-value limit or a connected peer's ATT MTU minus 3.");
-		command.operation = restore ? WorkerOperation::RestoreValue : WorkerOperation::PublishValue;
+		const size_t maximum = std::min({GattValue::MaxWebLength, item->maxLength, item->publicationLimit});
+		if (command.valueLength > maximum)
+		{
+			detail = "Cannot publish " + std::to_string(command.valueLength) + " bytes: current publication limit is " +
+				std::to_string(item->publicationLimit) + " bytes; maximum single update is " + std::to_string(maximum) +
+				" bytes (stored maximum " + std::to_string(item->maxLength) + " bytes; Web cap 256 bytes).";
+			if (item->connectedPeerCount == 0)
+				detail += " Connected peers: 0. No connected peers were reported in the GATT snapshot.";
+			else
+			{
+				detail += " Connected peers: " + std::to_string(item->connectedPeerCount) + ".";
+				if (item->minimumPeerMtu >= 23)
+					detail += " Smallest negotiated ATT MTU: " + std::to_string(item->minimumPeerMtu) +
+						"; ATT MTU - 3 gives " + std::to_string(item->minimumPeerMtu - 3) + " value bytes.";
+				else detail += " Smallest negotiated ATT MTU: unavailable.";
+				detail += " Every connected peer, including unsubscribed peers, must fit.";
+			}
+			return Admission::InvalidArgument;
+		}
+		command.operation = WorkerOperation::PublishValue;
 		setTarget(command, target);
 		return Admission::Ready;
 	}
@@ -893,14 +908,14 @@ Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& co
 	return unsupported(detail, "Unknown operation.");
 }
 
-bool handleAdmissionFailure(httpd_req_t* request, Admission admission, const char* detail)
+bool handleAdmissionFailure(httpd_req_t* request, Admission admission, const std::string& detail)
 {
 	switch (admission)
 	{
-		case Admission::InvalidArgument: sendFailure(request, 400, "InvalidArgument", detail); break;
-		case Admission::Unsupported: sendFailure(request, 400, "Unsupported", detail); break;
-		case Admission::NotFound: sendFailure(request, 404, "Failed", detail); break;
-		case Admission::Busy: sendFailure(request, 409, "Busy", detail); break;
+		case Admission::InvalidArgument: sendFailure(request, 400, "InvalidArgument", detail.c_str()); break;
+		case Admission::Unsupported: sendFailure(request, 400, "Unsupported", detail.c_str()); break;
+		case Admission::NotFound: sendFailure(request, 404, "Failed", detail.c_str()); break;
+		case Admission::Busy: sendFailure(request, 409, "Busy", detail.c_str()); break;
 		default: return false;
 	}
 	return true;
@@ -1043,10 +1058,9 @@ ExecutionResult execute(const WorkerCommand& command)
 	switch (command.operation)
 	{
 		case WorkerOperation::PublishValue:
-		case WorkerOperation::RestoreValue:
 		{
-			const auto result = FixtureGatt::ChangeValue(command.connection, command.value, command.valueLength, command.operation == WorkerOperation::RestoreValue);
-			execution.result = result.outcome == FixtureGatt::Outcome::Applied ? Result::Applied : result.outcome == FixtureGatt::Outcome::Dispatched ? Result::Dispatched : Result::Failed;
+			const auto result = FixtureGatt::ChangeValue(command.connection, command.value, command.valueLength);
+			execution.result = result.outcome == FixtureGatt::Outcome::Dispatched ? Result::Dispatched : Result::Failed;
 			execution.detail = result.detail;
 			execution.data.hasGatt = true;
 			execution.data.storageVerified = result.storageVerified;
@@ -1213,7 +1227,7 @@ ExecutionResult execute(const WorkerCommand& command)
 			execution.result = mapOutcome(manager.SetPreferredMtu(static_cast<uint16_t>(command.p1)));
 			break;
 	}
-	if (!execution.detail || std::strcmp(execution.detail, "Operation failed.") == 0)
+	if (execution.detail.empty() || execution.detail == "Operation failed.")
 		execution.detail = defaultDetail(execution.result);
 	return execution;
 }
@@ -1238,7 +1252,7 @@ void operationWorkerTask(void*)
 			if (operationRecord.id != id || operationRecord.state != SlotState::Running) continue;
 			operationRecord.result = result.result;
 			operationRecord.data = result.data;
-			std::strncpy(operationRecord.detail, result.detail, sizeof(operationRecord.detail) - 1);
+			std::strncpy(operationRecord.detail, result.detail.c_str(), sizeof(operationRecord.detail) - 1);
 			if (result.errorCode)
 				std::strncpy(operationRecord.errorCode, result.errorCode, sizeof(operationRecord.errorCode) - 1);
 			if (result.errorInstanceId)
@@ -1262,7 +1276,7 @@ bool enqueueRoute(httpd_req_t* request, Route route)
 		return false;
 	}
 	WorkerCommand command{};
-	const char* detail = "Invalid operation.";
+	std::string detail = "Invalid operation.";
 	const Admission admission = prepareWorkerCommand(route, json, command, detail);
 	cJSON_Delete(json);
 	if (handleAdmissionFailure(request, admission, detail)) return false;
@@ -1417,6 +1431,17 @@ bool statusIsComplete(const cJSON* root, const std::vector<Advertising::Instance
 	if (!hasExactObjectKeys(root, {"device", "network", "preferredMtu", "advertising", "security", "bonds",
 		"connections", "capabilities", "csrfToken", "lastOperation", "resources"})) return false;
 	const cJSON* device = cJSON_GetObjectItemCaseSensitive(root, "device");
+	const cJSON* firmwareRevision = cJSON_GetObjectItemCaseSensitive(device, "firmwareRevision");
+	const cJSON* firmwareSource = cJSON_GetObjectItemCaseSensitive(device, "firmwareSource");
+	const cJSON* firmwareEnvironment = cJSON_GetObjectItemCaseSensitive(device, "firmwareEnvironment");
+	const char* sourceId = cJSON_GetStringValue(firmwareSource);
+	const char* environment = cJSON_GetStringValue(firmwareEnvironment);
+	if (!cJSON_IsNumber(firmwareRevision) || !std::isfinite(firmwareRevision->valuedouble) ||
+		firmwareRevision->valuedouble < 0 || firmwareRevision->valuedouble > std::numeric_limits<uint32_t>::max() ||
+		std::floor(firmwareRevision->valuedouble) != firmwareRevision->valuedouble || !sourceId || std::strlen(sourceId) != 64 ||
+		!std::all_of(sourceId, sourceId + 64, [](unsigned char ch) {
+			return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+		}) || !environment || !*environment) return false;
 	const cJSON* network = cJSON_GetObjectItemCaseSensitive(root, "network");
 	const cJSON* advertising = cJSON_GetObjectItemCaseSensitive(root, "advertising");
 	const cJSON* security = cJSON_GetObjectItemCaseSensitive(root, "security");
@@ -1426,7 +1451,7 @@ bool statusIsComplete(const cJSON* root, const std::vector<Advertising::Instance
 	const cJSON* supportedModes = cJSON_GetObjectItemCaseSensitive(capabilities, "supportedModes");
 	const cJSON* resources = cJSON_GetObjectItemCaseSensitive(root, "resources");
 	const cJSON* lastOperation = cJSON_GetObjectItemCaseSensitive(root, "lastOperation");
-	if (!hasExactObjectKeys(device, {"name", "address", "uptimeMs"}) ||
+	if (!hasExactObjectKeys(device, {"name", "address", "uptimeMs", "firmwareRevision", "firmwareSource", "firmwareEnvironment"}) ||
 		!hasExactObjectKeys(network, {"connected", "ip", "hostname"}) ||
 		!cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(root, "preferredMtu")) ||
 		!cJSON_IsString(cJSON_GetObjectItemCaseSensitive(root, "csrfToken")) ||
@@ -1467,8 +1492,7 @@ bool statusIsComplete(const cJSON* root, const std::vector<Advertising::Instance
 		const cJSON* error = cJSON_GetObjectItemCaseSensitive(lastOperation, "error");
 		const char* operation = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(lastOperation, "operation"));
 		const char* state = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(lastOperation, "state"));
-		const bool completedGatt = std::strcmp(state, "Done") == 0 &&
-			(std::strcmp(operation, "publishValue") == 0 || std::strcmp(operation, "restoreValue") == 0);
+		const bool completedGatt = std::strcmp(state, "Done") == 0 && std::strcmp(operation, "publishValue") == 0;
 		if (completedGatt && !hasExactObjectKeys(data, {"storageVerified", "publicationAttempted", "publicationDispatched"})) return false;
 		if (count != 6 + (data ? 1u : 0u) + (error ? 1u : 0u)) return false;
 		if (error)
@@ -1544,6 +1568,9 @@ cJSON* makeStatus(bool& snapshotBusy, bool& incompleteResponse)
 	const std::string address = NimBLEDevice::getAddress().toString();
 	cJSON_AddStringToObject(device, "address", address.c_str());
 	cJSON_AddNumberToObject(device, "uptimeMs", millis());
+	cJSON_AddNumberToObject(device, "firmwareRevision", FirmwareIdentity::revision());
+	cJSON_AddStringToObject(device, "firmwareSource", FirmwareIdentity::sourceId());
+	cJSON_AddStringToObject(device, "firmwareEnvironment", FirmwareIdentity::environment());
 	cJSON_AddItemToObject(root, "device", device);
 
 	cJSON* network = cJSON_CreateObject();
@@ -1730,9 +1757,9 @@ esp_err_t getGatt(httpd_req_t* request)
 	if (observed.outcome != FixtureGatt::Outcome::Ready)
 	{
 		if (observed.outcome == FixtureGatt::Outcome::Failed)
-			sendFailure(request, 500, "Failed", observed.detail);
+			sendFailure(request, 500, "Failed", observed.detail.c_str());
 		else
-			sendFailure(request, 409, "Busy", observed.detail);
+			sendFailure(request, 409, "Busy", observed.detail.c_str());
 		return ESP_OK;
 	}
 	cJSON* json = cJSON_CreateObject();
@@ -1751,9 +1778,9 @@ esp_err_t getGatt(httpd_req_t* request)
 			!cJSON_AddBoolToObject(value, "indicate", (entry.properties & NIMBLE_PROPERTY::INDICATE) != 0) ||
 			!cJSON_AddNumberToObject(value, "maxLength", entry.maxLength) ||
 			!cJSON_AddNumberToObject(value, "publicationLimit", entry.publicationLimit) ||
-			!cJSON_AddStringToObject(value, "currentHex", hexValue(entry.current).c_str()) ||
-			!cJSON_AddStringToObject(value, "baselineHex", hexValue(entry.baseline).c_str()) ||
-			!cJSON_AddBoolToObject(value, "modified", entry.current != entry.baseline))
+			!cJSON_AddNumberToObject(value, "minimumPeerMtu", entry.minimumPeerMtu) ||
+			!cJSON_AddNumberToObject(value, "connectedPeerCount", entry.connectedPeerCount) ||
+			!cJSON_AddStringToObject(value, "currentHex", hexValue(entry.current).c_str()))
 		{
 			cJSON_Delete(value);
 			cJSON_Delete(json);

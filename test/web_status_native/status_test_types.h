@@ -39,13 +39,14 @@ namespace FixtureGatt
 		uint16_t properties = 0;
 		size_t maxLength = 0;
 		size_t publicationLimit = 0;
+		size_t minimumPeerMtu = 0;
+		size_t connectedPeerCount = 0;
 		std::vector<uint8_t> current;
-		std::vector<uint8_t> baseline;
 	};
 	struct WebResult
 	{
 		Outcome outcome = Outcome::Failed;
-		const char* detail = "GATT snapshot failed.";
+		std::string detail = "GATT snapshot failed.";
 		std::vector<ValueSnapshot> values;
 	};
 	WebResult GetValues();
@@ -91,8 +92,7 @@ enum class WorkerOperation
 	RequestPhy,
 	ReadPeerLink,
 	SetPreferredMtu,
-	PublishValue,
-	RestoreValue
+	PublishValue
 };
 
 enum class SlotState { Empty, Queued, Running, Done };
@@ -135,7 +135,7 @@ struct WorkerRecord
 	WorkerCommand command{};
 	SlotState state = SlotState::Empty;
 	std::optional<Result> result;
-	char detail[96]{};
+	char detail[256]{};
 	char errorCode[48]{};
 	bool errorHasInstanceId = false;
 	uint8_t errorInstanceId = 0;

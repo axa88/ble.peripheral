@@ -12,7 +12,7 @@ sys.dont_write_bytecode = True
 
 
 ROOT = Path(__file__).resolve().parents[2]
-OUTPUT = ROOT / ".pio" / "descriptor-fixture" / "native-startup"
+OUTPUT = ROOT / ".pio" / "descriptor-fixture" / "native-startup-firmware-id"
 TEST_DIR = Path(__file__).resolve().parent
 ADAPTER_DIR = ROOT / "test" / "descriptor_fixture_native"
 
@@ -106,7 +106,15 @@ def main():
 		]
 		subprocess.run(command, cwd=ROOT, env=environment, check=True)
 		for scenario in ("success", "registration-failure", "finalization-failure"):
-			subprocess.run([str(executable), scenario], cwd=ROOT, env=environment, check=True)
+			result = subprocess.run([str(executable), scenario], cwd=ROOT, env=environment,
+				capture_output=True, text=True, check=False)
+			if result.returncode != 0:
+				sys.stdout.write(result.stdout)
+				sys.stderr.write(result.stderr)
+				raise RuntimeError(f"Startup scenario {scenario} failed with exit code {result.returncode}.")
+			identity_line = "Firmware revision 7 | source 0123456789ab | environment native-startup"
+			if result.stdout.splitlines().count(identity_line) != 1:
+				raise RuntimeError(f"Startup scenario {scenario} did not log the firmware identity exactly once.")
 		print(f"PASS CONFIG_BT_NIMBLE_EXT_ADV={extended}: all three startup scenarios")
 
 	print("Native-only startup harness passed; this does not validate radio behavior or hardware acceptance.")

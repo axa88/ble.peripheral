@@ -9,7 +9,7 @@
 </style>
 </head>
 <body>
-<header><h1>BLE Peripheral</h1><div class="device-identification"><span id="connection" class="muted" role="status">Connecting...</span><span id="deviceAddress" class="muted">Bluetooth address: connecting...</span></div></header>
+<header><h1>BLE Peripheral</h1><div class="device-identification"><span id="connection" class="muted" role="status">Connecting...</span><span id="deviceAddress" class="muted">Bluetooth address: connecting...</span><span id="firmwareIdentity" class="muted">Firmware version unavailable</span></div></header>
 <p class="muted">Control this peripheral on your trusted LAN. Pairing requests expire independently of this page.</p>
 <main>
 <section><h2>Advertising</h2>
@@ -41,15 +41,14 @@
 <section class="wide"><details class="section-disclosure"><summary>Overview</summary><pre id="overview">Waiting for device status.</pre><div id="advertisements"></div><div id="connectionTable"></div><details><summary>Resource observations</summary><pre id="resources">Waiting for measurements.</pre></details></details></section>
 <section class="wide"><h2>GATT Controls</h2>
 <label>Characteristic<select id="gattTarget"></select></label><pre id="gattIdentity"></pre>
-<p>Current value (hex)</p><pre id="gattCurrent">Unavailable</pre><p>Baseline (hex)</p><pre id="gattBaseline">Unavailable</pre>
-<p id="gattState" role="status">Unknown / unavailable</p><p id="gattLimit" class="muted"></p>
+<p>Current value (hex)</p><pre id="gattCurrent">Unavailable</pre><p id="gattLimit" class="muted"></p>
 <label>Value to publish (hex; empty allowed)<input id="gattHex" type="text" maxlength="1024" autocomplete="off" spellcheck="false" style="width:100%"></label>
 <p id="gattDraftStatus" role="status" aria-live="polite">Draft unavailable. Select a current target to enable Send.</p>
-<button id="gattPublish" data-worker-action disabled>Send value</button><button id="gattRestore" data-worker-action disabled>Restore baseline</button>
-<p class="muted">Send requests delivery to subscribers; verify receipt on the BLE client. Restore stores and verifies the full baseline without publishing, even when it exceeds the current send limit. Selections and scenario prefill do not change the device.</p>
+<button id="gattPublish" data-worker-action disabled>Send value</button>
+<p class="muted">Send stores the value and requests delivery to subscribers. Verify receipt on the BLE client; a reported send does not prove receipt or indication acknowledgement. Every connected peer, including unsubscribed peers, bounds the publication limit. With no connected peers, Send changes the stored value and nobody can receive an update. ATT carries up to three fewer value bytes than the negotiated MTU. Selections and scenario prefill do not change the device.</p>
 </section>
 <section class="wide"><details class="section-disclosure"><summary>GATT Test Scenarios</summary>
-<p class="muted">Use a BLE central with fresh discovery. These are instructions and expected data, not observed test results. Avoid concurrent writes to the same target. Restore baseline explicitly before canonical-value tests.</p>
+<p class="muted">Use a BLE central with fresh discovery. These are instructions and expected data, not observed test results. Avoid concurrent writes to the same target. A fresh boot provides the canonical initial values.</p>
 <label>Scenario<select id="gattScenario"></select></label><pre id="gattScenarioInfo"></pre>
 <button id="gattPrefill" disabled>Fill GATT Controls</button>
 </details></section>
@@ -70,13 +69,13 @@ const fixtureUuid=suffix=>'12345678-1234-5678-1234-56789abc'+suffix;
 const scalarFixtures=[['df01','Exponent Zero','00','235'],['df02','Exponent Positive','7F','235 x 10^127'],['df03','Exponent Negative Minimum','80','235 x 10^-128'],['df04','Exponent Negative Two','FE','2.35'],['df05','Temperature Scalar','FF','23.5']];
 const gattScenarios=[
  {name:'User Descriptions',text:()=> 'Central only: discover service '+fixtureUuid('df00')+' and READ each 0x2901. Compare exact UTF-8 bytes (no trailing NUL) and parent:\r\n'+scalarFixtures.concat([['df06','Aggregate Value'],['df07','Temperature Update Trigger']]).map(row=>fixtureUuid(row[0])+': '+row[1]).join('\r\n')+'\r\nPass: all seven exact READ-only strings; a descriptor write request is rejected with no change. Original '+fixtureUuid('def1')+' has no 0x2901.'},
- {name:'Presentation Formats and signed exponents',text:()=> 'Central only: READ these five values (EB 00, sint16 raw 235) and their 0x2904:\r\n'+scalarFixtures.map(row=>fixtureUuid(row[0])+': 0E '+row[2]+' 2F 27 01 00 00 -> '+row[3]+' degrees Celsius').join('\r\n')+'\r\nPass: exact CPF bytes; signed exponents 0, 127, -128, -2, -1. Record native projection separately from interpretation; preserve precision at extreme exponents. Restore Temperature Scalar baseline before this test.'},
+ {name:'Presentation Formats and signed exponents',text:()=> 'Central only: READ these five values (EB 00, sint16 raw 235) and their 0x2904:\r\n'+scalarFixtures.map(row=>fixtureUuid(row[0])+': 0E '+row[2]+' 2F 27 01 00 00 -> '+row[3]+' degrees Celsius').join('\r\n')+'\r\nPass: exact CPF bytes; signed exponents 0, 127, -128, -2, -1. Record native projection separately from interpretation; preserve precision at extreme exponents. Use a fresh boot when the canonical initial values are required.'},
  {name:'Aggregate Format',text:()=> 'Central only: '+fixtureUuid('df06')+' value EB 00 2A; local 0x2904 = 04 00 00 27 01 00 00. READ 0x2905: two uint16 little-endian handles, first '+fixtureUuid('df05')+'.0x2904, second '+fixtureUuid('df06')+'.0x2904. Compare with boot handle log. Pass: authoritative mapping gives [23.5 degrees Celsius, 42] in that order. Handle-opaque clients must report unresolved, never guess or interpret the whole value using only the local CPF. Temperature changes do not change AggregateValue.'},
  {name:'Valid Range',text:()=> 'Central only: '+fixtureUuid('df04')+' value EB 00; CPF 0E FE 2F 27 01 00 00; READ-only 0x2906 = 70 FE E8 03. Pass: raw signed-16 bounds -400 and 1000; apply parent exponent -2 for inclusive -4.00 to 10.00 degrees Celsius; baseline 2.35 is inside. No runtime range enforcement is provided.'},
  {name:'Descriptor absence',text:()=> 'Central only: discover '+fixtureUuid('def1')+' (readable original value) and '+fixtureUuid('df07')+' (WRITE-only trigger): neither has 0x2904 or 0x2905; trigger has 0x2901 but original has none. '+fixtureUuid('df01')+' has 0x2901 and 0x2904 but no 0x2906. Pass: exact absence on the correct parents; never borrow neighboring metadata.'},
- {name:'Temperature read and update',suffix:'df05',hex:'F5 00',text:()=> 'Target '+fixtureUuid('df05')+'. Restore baseline explicitly; central READ returns EB 00 (23.5 degrees Celsius). Subscribe, then WRITE acknowledged 01 to '+fixtureUuid('df07')+': update retains current bytes. Alternatively fill controls and Send notification with F5 00: pass if read and received bytes equal F5 00 (24.5 degrees Celsius). Unsubscribe and trigger again: no receipt. Restore does not publish. Other accepted trigger bytes do not publish; invalid ATT lengths may be rejected.'},
- {name:'Original notification',suffix:'def2',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def2')+'. Subscribe via the central, fill controls and Send notification. Pass: received update and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Restore baseline explicitly; read ASCII Notify Characteristic and observe no restore update. Generic publication is not a central ATT write and does not invoke the original trigger callback.'},
- {name:'Original indication',suffix:'def3',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def3')+'. Subscribe for indications via the central, fill controls and Send indication. Pass: received indication and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Verify client acknowledgement separately from server dispatch. Restore baseline explicitly; read ASCII Indicate Characteristic and observe no restore update.'}
+ {name:'Temperature read and update',suffix:'df05',hex:'F5 00',text:()=> 'Target '+fixtureUuid('df05')+'. At a fresh boot, central READ returns EB 00 (23.5 degrees Celsius). Subscribe, then WRITE acknowledged 01 to '+fixtureUuid('df07')+': update retains current bytes. Alternatively fill controls and Send notification with F5 00: pass if read and received bytes equal F5 00 (24.5 degrees Celsius). Unsubscribe and trigger again: no receipt. Other accepted trigger bytes do not publish; invalid ATT lengths may be rejected.'},
+ {name:'Original notification',suffix:'def2',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def2')+'. At a fresh boot, read ASCII Notify Characteristic before publication. Subscribe via the central, fill controls and Send notification. Pass: received update and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Reboot for the original value. Generic publication is not a central ATT write and does not invoke the original trigger callback.'},
+ {name:'Original indication',suffix:'def3',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def3')+'. At a fresh boot, read ASCII Indicate Characteristic before publication. Subscribe for indications via the central, fill controls and Send indication. Pass: received indication and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Verify client acknowledgement separately from server dispatch. Reboot for the original value.'}
 ];
 const pairNodes=new Map();
 const submittedFields=new Map();
@@ -88,7 +87,7 @@ const operationLabels={
  setCapabilities:'Set pairing I/O',setAuthentication:'Set security flag',setKeyDistribution:'Set key distribution',
  deleteConnection:'Delete bond',deleteAll:'Delete all bonds',disconnect:'Disconnect peer',disconnectAll:'Disconnect all peers',
  readPeerLink:'Read peer link',requestPhy:'Request PHY',setDataLength:'Request data length',setConnectionParameters:'Request connection parameters',
- setPreferred:'Set preferred MTU',enterPasskey:'Submit passkey',confirm:'Submit numeric confirmation',publishValue:'Publish GATT value',restoreValue:'Restore GATT baseline'
+ setPreferred:'Set preferred MTU',enterPasskey:'Submit passkey',confirm:'Submit numeric confirmation',publishValue:'Publish GATT value'
 };
 const supportedFailureResults=new Set(['Failed','InvalidArgument','Unsupported','Busy']);
 const number=id=>{const field=$(id);if(!field.checkValidity()||!Number.isInteger(Number(field.value))||field.value==='')throw Error('Enter a valid '+id+' value.');return Number(field.value);};
@@ -187,7 +186,9 @@ async function post(route,op,fields={},fieldIds=[]){
  }catch(error){
   releaseFieldSnapshots(snapshots);
   if(ownsLocalWorkerBusy){localWorkerBusy=false;localPendingOperationId='';if(status)setWorkerAvailability(status);}
-  if(!error.reported){error.reported=true;showError({title:'Device request failed'+(error.statusCode?' (HTTP '+error.statusCode+')':''),context:context+(error.result?' - '+error.result:''),detail:error.message||'Request failed.'});}
+  const detail=(error.message||'Request failed.')+(route==='gatt'&&op==='publishValue'&&error.result==='InvalidArgument'?
+   gattAdmissionRefreshNote(fields.targetId,error.message):'');
+  if(!error.reported){error.reported=true;showError({title:'Device request failed'+(error.statusCode?' (HTTP '+error.statusCode+')':''),context:context+(error.result?' - '+error.result:''),detail});}
   throw error;
  }
 }
@@ -231,6 +232,11 @@ function renderTable(hostId,headers,rows){
 }
 function spacedHex(text){return (String(text).match(/../g)||[]).join(' ');}
 function selectedGatt(){return gattAvailable?gattValues.find(item=>item.targetId===$('gattTarget').value):undefined;}
+function firmwareIdentityText(device){
+ const revision=device&&device.firmwareRevision,environment=device&&device.firmwareEnvironment,source=String(device&&device.firmwareSource||'');
+ if(!Number.isInteger(revision)||revision<0||revision>4294967295||typeof environment!=='string'||!environment||!/^[0-9a-f]{64}$/i.test(source))return 'Firmware version unavailable';
+ return 'Firmware r'+revision+' · '+environment+' · source '+source.slice(0,12);
+}
 const gattHexPattern=/^(?:[ \t\r\n\f\v]*[0-9a-fA-F]{2})*[ \t\r\n\f\v]*$/;
 function gattDraftByteCount(text){return gattHexPattern.test(text)?text.replace(/[ \t\r\n\f\v]/g,'').length/2:null;}
 function parseGattHex(text){
@@ -249,22 +255,81 @@ function gattSendLimitReason(item){
  if(Number.isFinite(publicationLimit)&&publicationLimit<localLimit)return 'connected-peer publication limit';
  return Number.isFinite(maxLength)&&maxLength<256?'stored maximum':'Web cap';
 }
+function gattPeerLimitSnapshot(item){
+ const peers=status&&Array.isArray(status.connections)?status.connections:null;
+ const maxLength=Number(item.maxLength),publicationLimit=Number(item.publicationLimit),minimumPeerMtu=Number(item.minimumPeerMtu),connectedPeerCount=Number(item.connectedPeerCount);
+ if(!Number.isInteger(maxLength)||maxLength<0||!Number.isInteger(publicationLimit)||publicationLimit<0||!Number.isInteger(minimumPeerMtu)||minimumPeerMtu<0||!Number.isInteger(connectedPeerCount)||connectedPeerCount<0)
+  return {valid:false,peers,limiting:[],connectedPeerCount:null,minimumPeerMtu:null,noPeers:false,peerBound:false,peerDetailsMatch:false};
+ const storedWebLimit=Math.min(256,maxLength);
+ if(connectedPeerCount===0){
+  return {valid:minimumPeerMtu===0&&publicationLimit===storedWebLimit,peers,limiting:[],connectedPeerCount,minimumPeerMtu,noPeers:true,peerBound:false,
+   peerDetailsMatch:Array.isArray(peers)&&peers.length===0};
+ }
+ if(minimumPeerMtu<23||minimumPeerMtu>517)return {valid:false,peers,limiting:[],connectedPeerCount,minimumPeerMtu,noPeers:false,peerBound:false,peerDetailsMatch:false};
+ const peerLimit=minimumPeerMtu-3;
+ const expected=Math.min(storedWebLimit,peerLimit);
+ const peerDetailsMatch=Array.isArray(peers)&&peers.length===connectedPeerCount&&peers.every(peer=>Number.isInteger(Number(peer.mtu))&&Number(peer.mtu)>=23&&Number(peer.mtu)<=517)&&
+  Math.min(...peers.map(peer=>Number(peer.mtu)))===minimumPeerMtu;
+ const peerBound=peerLimit===publicationLimit&&publicationLimit<storedWebLimit;
+ const limiting=peerBound&&peerDetailsMatch?peers.filter(peer=>Number(peer.mtu)===minimumPeerMtu):[];
+ return {valid:expected===publicationLimit,peers,limiting,connectedPeerCount,minimumPeerMtu,noPeers:false,peerBound,peerDetailsMatch};
+}
+function gattPublicationContext(item){
+ const maxLength=Number(item.maxLength),publicationLimit=Number(item.publicationLimit),sendLimit=effectiveGattSendLimit(item);
+ const snapshot=gattPeerLimitSnapshot(item);
+ let message='Current publication limit: '+publicationLimit+' bytes. Maximum single update: '+sendLimit+' bytes (stored maximum '+maxLength+' bytes; Web cap 256 bytes).';
+ if(snapshot.noPeers)return message+' No connected peers are reported; nobody can receive an update now. Send only changes the stored value.';
+ if(!snapshot.valid)return message+' Connection details are refreshing; the server-reported publication limit is authoritative.';
+ if(snapshot.peerBound){
+  if(snapshot.limiting.length){
+   const peers=snapshot.limiting.map(peer=>peer.address+' (handle '+peer.handle+', ATT MTU '+peer.mtu+')').join('; ');
+   message+=' Limiting peer(s): '+peers+'; ATT MTU - 3 gives '+publicationLimit+' bytes.';
+  }else message+=' The GATT snapshot minimum connected-peer ATT MTU is '+snapshot.minimumPeerMtu+'; ATT MTU - 3 gives '+publicationLimit+' bytes. Connection details are refreshing.';
+  message+=' Every connected peer, including unsubscribed peers, must fit.';
+ }else if(gattSendLimitReason(item)==='stored maximum')message+=' The stored maximum is the binding limit.';
+ else if(gattSendLimitReason(item)==='Web cap')message+=' The Web payload cap is the binding limit.';
+ if(!snapshot.peerDetailsMatch&&!snapshot.peerBound)message+=' Connection details are refreshing; peer addresses are not attributed.';
+ return message;
+}
+function gattPublicationError(item,count){
+ const publicationLimit=Number(item.publicationLimit),sendLimit=effectiveGattSendLimit(item),maxLength=Number(item.maxLength);
+ const snapshot=gattPeerLimitSnapshot(item);
+ let message='Cannot send '+count+' bytes: current publication limit is '+publicationLimit+' bytes; the maximum single update is '+sendLimit+' bytes.';
+ if(snapshot.noPeers){
+  message+=' No connected peers are reported, so nobody can receive an update now; Send would only change the stored value.';
+  if(gattSendLimitReason(item)==='stored maximum')message+=' The stored maximum is '+maxLength+' bytes.';
+  else if(gattSendLimitReason(item)==='Web cap')message+=' The Web payload cap is 256 bytes.';
+ }
+ else if(!snapshot.valid)message+=' Connection details are refreshing; the server-reported publication limit is authoritative.';
+ else if(snapshot.peerBound){
+  if(snapshot.limiting.length){
+   const peers=snapshot.limiting.map(peer=>peer.address+' (handle '+peer.handle+', ATT MTU '+peer.mtu+')').join('; ');
+   message+=' Limiting peer(s): '+peers+'; ATT MTU - 3 gives '+publicationLimit+' bytes.';
+  }else message+=' The GATT snapshot minimum connected-peer ATT MTU is '+snapshot.minimumPeerMtu+'; ATT MTU - 3 gives '+publicationLimit+' bytes. Connection details are refreshing.';
+  message+=' Every connected peer, including unsubscribed peers, must fit.';
+ }else if(gattSendLimitReason(item)==='stored maximum')message+=' The stored maximum is '+maxLength+' bytes.';
+ else if(gattSendLimitReason(item)==='Web cap')message+=' The Web payload cap is 256 bytes.';
+ if(!snapshot.peerDetailsMatch&&!snapshot.noPeers&&!snapshot.peerBound)message+=' Peer addresses are not attributed while connection details refresh.';
+ return message;
+}
+function gattAdmissionRefreshNote(targetId,detail){
+ const text=String(detail||''),countMatch=text.match(/Connected peers: (\d+)\./);
+ if(!countMatch)return '';
+ const item=gattValues.find(value=>value.targetId===targetId);
+ if(!item)return ' Connection details are refreshing; server-reported peer data is authoritative and page peer addresses are not attributed.';
+ const count=Number(countMatch[1]),mtuMatch=text.match(/Smallest negotiated ATT MTU: (\d+); ATT MTU - 3 gives (\d+) value bytes\./);
+ const snapshot=gattPeerLimitSnapshot(item);
+ const mismatch=count!==Number(item.connectedPeerCount)||
+  (count>0&&(!mtuMatch||Number(mtuMatch[1])!==Number(item.minimumPeerMtu)))||!snapshot.peerDetailsMatch;
+ return mismatch?' Connection details are refreshing; server-reported peer data is authoritative and page peer addresses are not attributed.':'';
+}
 function updateGattDraft(item=selectedGatt()){
  const field=$('gattHex'),statusNode=$('gattDraftStatus');
  if(!item){statusNode.textContent='Draft unavailable. Select a current target to enable Send.';return false;}
  const count=gattDraftByteCount(field.value),limit=effectiveGattSendLimit(item);
  if(count===null){statusNode.textContent='Draft is invalid hexadecimal. Use complete byte pairs. Send is disabled.';return false;}
- if(count<=limit){statusNode.textContent='Payload: '+count+' bytes. Send limit: '+limit+' bytes.';return true;}
- const reason=gattSendLimitReason(item);
- let message='Payload: '+count+' bytes; send limit: '+limit+' bytes ('+(count-limit)+' too long; limited by '+reason+'). Send is disabled.';
- const compact=field.value.replace(/[ \t\r\n\f\v]/g,'').toUpperCase();
- const baseline=String(item.baselineHex||'').replace(/[ \t\r\n\f\v]/g,'').toUpperCase();
- if(compact===baseline){
-  message+=' Restore stores all '+count+' baseline bytes without publishing.';
-  if(reason==='connected-peer publication limit')
-   message+=' A payload this size needs a negotiated ATT MTU of at least '+Math.max(23,count+3)+' on every connected peer.';
- }
- statusNode.textContent=message;
+ if(count<=limit){statusNode.textContent='Payload: '+count+' bytes. Maximum single update: '+limit+' bytes.';return true;}
+ statusNode.textContent='Payload: '+count+' bytes exceeds the current publication limit. Maximum single update: '+limit+' bytes ('+(count-limit)+' too many). Send is disabled. '+gattPublicationContext(item);
  return false;
 }
 function renderGattSelection(){
@@ -272,9 +337,7 @@ function renderGattSelection(){
  if(changed){lastGattSelection=$('gattTarget').value;$('gattHex').dataset.dirty='false';$('gattHex').dataset.editVersion=String((Number($('gattHex').dataset.editVersion)||0)+1);}
  $('gattIdentity').textContent=item?'Service: '+item.serviceUuid+'\r\nCharacteristic: '+item.characteristicUuid+'\r\nInstance: '+item.targetId+'\r\nProperties: READ'+(item.characteristicUuid===fixtureUuid('df05')?'':' | WRITE')+(item.notify?' | NOTIFY':' | INDICATE'):'';
  $('gattCurrent').textContent=item?(spacedHex(item.currentHex)||'(empty)'):'Unavailable';
- $('gattBaseline').textContent=item?(spacedHex(item.baselineHex)||'(empty)'):'Unavailable';
- $('gattState').textContent=!item?'Unknown / unavailable':item.modified?'Modified: current value differs from baseline. Canonical-value tests require restoration.':'Baseline';
- $('gattLimit').textContent=item?'Send limit: '+effectiveGattSendLimit(item)+' bytes. Stored maximum: '+item.maxLength+'; Web cap: 256; peer limit includes all connected peers, even unsubscribed.':'';
+ $('gattLimit').textContent=item?gattPublicationContext(item):'';
  $('gattPublish').textContent=item&&item.indicate?'Send indication':'Send notification';
  if(item)syncField('gattHex',spacedHex(item.currentHex),changed);
  updateGattDraft(item);
@@ -300,7 +363,7 @@ function publishGatt(){
  const item=selectedGatt();if(!item)throw Error('Wait for a current GATT target.');
  const draft=$('gattHex').value,count=gattDraftByteCount(draft),limit=effectiveGattSendLimit(item);
  if(count===null){updateGattDraft(item);throw Error('Enter complete hexadecimal byte pairs; nothing was sent.');}
- if(count>limit){updateGattDraft(item);throw Error('Cannot send '+count+' bytes; send limit is '+limit+' bytes ('+gattSendLimitReason(item)+').');}
+ if(count>limit){updateGattDraft(item);throw Error(gattPublicationError(item,count));}
  const hex=parseGattHex(draft);
  $('gattHex').value=spacedHex(hex);markDirty(['gattHex']);
  return post('gatt','publishValue',{targetId:item.targetId,hex},['gattHex']);
@@ -404,7 +467,6 @@ function setWorkerAvailability(data){
  const gatt=selectedGatt();
   const gattDraftCanSend=updateGattDraft(gatt);
   $('gattPublish').disabled=busy||!csrf||!gatt||!gattDraftCanSend;
- $('gattRestore').disabled=busy||!csrf||!gatt;
  const advertising=data.advertising||[],bonds=data.bonds||[],connections=data.connections||[],caps=data.capabilities||{};
  const adv=advertising.find(item=>String(item.instanceId)===$('adv').value);
  const peer=connections.find(item=>item.connectionId===$('peer').value);
@@ -449,6 +511,7 @@ function renderStatus(data){
  const device=data.device||{},network=data.network||{},caps=data.capabilities||{},ads=data.advertising||[],bonds=data.bonds||[],peers=data.connections||[];
  $('connection').textContent=(device.name||'Peripheral')+' - '+(network.ip||'network unavailable');
  $('deviceAddress').textContent='Bluetooth address: '+(device.address||'unavailable');
+ $('firmwareIdentity').textContent=firmwareIdentityText(device);
  options('adv',ads.map(item=>[item.instanceId,item.instanceId+' - '+item.name]));
  resetAdvertisingDraftOnSwitch();
  const targetEntries=[['','No directed target assigned',!((bonds||[]).length)]];
@@ -563,7 +626,6 @@ function installHandlers(){
  $('gattTarget').onchange=()=>{renderGattSelection();if(status)setWorkerAvailability(status);};
  $('gattHex').oninput=()=>{markDirty(['gattHex']);if(status)setWorkerAvailability(status);else updateGattDraft();};
  $('gattPublish').onclick=()=>invoke(publishGatt);
- $('gattRestore').onclick=()=>invoke(()=>{const item=selectedGatt();if(!item)throw Error('Wait for a current GATT target.');return post('gatt','restoreValue',{targetId:item.targetId});});
  $('adv').onchange=()=>{resetAdvertisingDraftOnSwitch();renderSelection();if(status)setWorkerAvailability(status);};$('peer').onchange=()=>{renderSelection();if(status)setWorkerAvailability(status);};
  $('start').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:true});});
  $('stop').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:false});});

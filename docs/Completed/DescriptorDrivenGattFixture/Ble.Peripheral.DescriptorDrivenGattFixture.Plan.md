@@ -1,5 +1,7 @@
 # Ble.Peripheral — Descriptor-Driven GATT Fixture Plan
 
+> Historical specification/closeout for commit `7aa1176`. The subsequent owner-requested follow-up removes runtime Restore and adds source revisioning and clearer MTU diagnostics; [current operation guidance](../../WebInterface.md) supersedes the Restore/UI contract below.
+
 **Revision:** 1.9 (owner-directed software closeout, 2026-10-27)
 
 **Status:** Implementation complete; software closeout and local promotion authorized by the owner on 2026-10-27. Detailed physical/platform acceptance remains unverified; this archive does not claim those tests passed. See the [completion record](Completion.md).
@@ -193,6 +195,8 @@ Record source revision plus dirty patch/hash, effective flags/mode, toolchain/st
 
 ## 8. Physical acceptance and Ble.Net handoff
 
+**Current-product scope:** Runtime Restore, saved-baseline tracking, and its API/UI were removed in the 2026-10-28 follow-up. Restore-related design and checks elsewhere in this historical plan, including scenario steps, are not current acceptance requirements. For current value checks, enter known bytes explicitly; the product has no runtime value reset.
+
 Deploy only after source/software review and separate owner authorization. Test both boards with exact uploaded BIN hashes and known GATT-cache state. Record central OS/device/app versions, firmware mode, discovery/read cache policy, test actions, raw results, and limitations. Use supported fresh/uncached discovery; if stale state persists, stop and establish an owner-approved cache reset. Do not automatically delete bonds or alter security to obtain evidence.
 
 | Acceptance group | Required evidence on both boards |
@@ -203,7 +207,7 @@ Deploy only after source/software review and separate owner authorization. Test 
 | Permissions | A central write request to representative new READ-only descriptors is rejected with unchanged bytes; discovery alone does not establish write permissions |
 | New trigger | Baseline and modified-value reads; enabled CCCD receives unchanged current TemperatureScalar after trigger `01`; unsupported accepted trigger data has no effect; unsubscribe prevents receipt |
 | Generic controls | Exact stored/published bytes for all three targets; indication and notification delivery; no delivery to connected unsubscribed peers; invalid/oversize/stale-target rejection before mutation; honest dispatch/error feedback |
-| Restoration/UI | Exact baseline bytes return without an update event; actual central-written state is reflected on polling; edits survive polling; scenario prefill causes no operation; descriptor bytes remain unchanged |
+| Current Web value controls | Enter known bytes explicitly for read/publish checks; confirm central writes appear on polling, drafts survive polling, scenario prefill does not mutate values, and descriptor bytes stay unchanged. The product has no runtime Restore/reset action. |
 | Original behavior | Original reads/writes/custom descriptor, legacy ATT event payload behavior, advertising, pairing, and interface operations remain as before |
 
 Exercise at least one connection at MTU 23 for 20-byte success/21-byte rejection and a larger negotiated MTU for a supported longer payload. Test empty publication where supported and separate library dispatch from client receipt. Do not claim multipeer subscription acceptance from a one-central test; retain a connected unsubscribed peer for that case. Full device testing need not repeat every case in all eight build modes; explicitly smoke-test central-trigger independence in a non-web mode on each board and record the image used.

@@ -48,13 +48,21 @@ function Get-SourceHashes {
 		[void]$visiblePaths.Add($path.Replace('\', '/'))
 	}
 	$files = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
-	foreach ($directory in @('src', 'web', 'include')) {
+	foreach ($directory in @(
+		'src', 'web', 'include', 'test/firmware_revision', 'test/gatt_publication_native',
+		'test/descriptor_fixture_native', 'test/descriptor_startup_native', 'test/web_status_native'
+	)) {
 		$directoryPath = Join-Path $projectRoot $directory
 		if (Test-Path -LiteralPath $directoryPath -PathType Container) {
 			foreach ($file in (Get-ChildItem -LiteralPath $directoryPath -File -Recurse -Force)) { $files.Add($file) }
 		}
 	}
-	foreach ($relative in @('platformio.ini', 'tools/generate-web-assets.py')) {
+	foreach ($relative in @(
+		'.gitignore', 'platformio.ini', 'firmware-revision.json',
+		'tools/generate-web-assets.py', 'tools/firmware_revision.py',
+		'tools/pio_firmware_identity.py', 'tools/pio_firmware_identity_post.py',
+		'tools/validate-descriptor-fixture.ps1'
+	)) {
 		$path = Join-Path $projectRoot $relative.Replace('/', '\')
 		if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required source input is missing: $relative" }
 		$files.Add((Get-Item -LiteralPath $path))
@@ -105,8 +113,24 @@ function Invoke-NativeRegression([string]$Name, [string]$RelativeScript) {
 $sourceUnchanged = $false
 $sourceChangePaths = @()
 $nativeChecks = [System.Collections.Generic.List[object]]::new()
+$identityPreparation = $null
 try {
 	$env:PYTHONIOENCODING = 'utf-8'
+	$identityPrepareLog = Join-Path $runRoot 'firmware-identity-prepare.log'
+	$identityScript = Join-Path $projectRoot 'tools\firmware_revision.py'
+	& $pythonExe $identityScript prepare --project-root $projectRoot *> $identityPrepareLog
+	$identityPrepareExitCode = $LASTEXITCODE
+	if ($identityPrepareExitCode -ne 0) { throw "Firmware identity preparation failed; see $identityPrepareLog." }
+	$revisionStatePath = Join-Path $projectRoot 'firmware-revision.json'
+	if (-not (Test-Path -LiteralPath $revisionStatePath -PathType Leaf)) { throw 'Firmware revision state was not created.' }
+	$revisionState = Get-Content -LiteralPath $revisionStatePath -Raw | ConvertFrom-Json
+	if ($revisionState.revision -lt 1 -or $revisionState.contentFingerprint -notmatch '^[0-9a-f]{64}$') {
+		throw 'Firmware revision state did not produce a valid source identity.'
+	}
+	$identityPreparation = [ordered]@{
+		result = 'Passed'; exitCode = $identityPrepareExitCode; log = ".pio/descriptor-fixture/$runId/firmware-identity-prepare.log"
+		revision = $revisionState.revision; sourceId = $revisionState.contentFingerprint
+	}
 	$baselineGit = Get-GitState
 	$baselineHashes = @(Get-SourceHashes)
 	$pioCoreVersion = @(Invoke-PioSafeLines -Arguments @('--version'))
@@ -123,10 +147,13 @@ try {
 		gitRevision = $baselineGit.revision
 		gitStatus = $baselineGit.status
 		sourceInputs = $baselineHashes
+		firmwareIdentity = $identityPreparation
 		versions = [ordered]@{ platformIOCore = $pioCoreVersion; packagesByEnvironment = $packageVersions }
 	}
 	Write-JsonFile $sourceSnapshotPath $sourceSnapshot
 	$sourceSnapshotHash = (Get-FileHash -LiteralPath $sourceSnapshotPath -Algorithm SHA256).Hash.ToLowerInvariant()
+	Invoke-NativeRegression -Name 'firmware-revision' -RelativeScript 'test/firmware_revision/run.py'
+	Invoke-NativeRegression -Name 'publication' -RelativeScript 'test/gatt_publication_native/run.py'
 	Invoke-NativeRegression -Name 'fixture' -RelativeScript 'test/descriptor_fixture_native/run.py'
 	Invoke-NativeRegression -Name 'startup' -RelativeScript 'test/descriptor_startup_native/run.py'
 	Invoke-NativeRegression -Name 'web-status' -RelativeScript 'test/web_status_native/run.py'
@@ -149,7 +176,18 @@ try {
 				throw "Build $label failed; see $log (do not publish credential-bearing diagnostics)."
 			}
 			$buildRoot = Join-Path $projectRoot ".pio\build\$board"
-			Copy-Item -LiteralPath (Join-Path $buildRoot 'firmware.bin') -Destination $binary
+			$buildBinary = Join-Path $buildRoot 'firmware.bin'
+			$buildIdentityStampPath = Join-Path $buildRoot 'firmware.bin.identity.json'
+			if (-not (Test-Path -LiteralPath $buildIdentityStampPath -PathType Leaf)) { throw "$label firmware identity stamp is missing." }
+			$buildIdentityStamp = Get-Content -LiteralPath $buildIdentityStampPath -Raw | ConvertFrom-Json
+			$buildBinaryHash = (Get-FileHash -LiteralPath $buildBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+			if ($buildIdentityStamp.revision -ne $identityPreparation.revision -or
+				$buildIdentityStamp.sourceId -ne $identityPreparation.sourceId -or
+				$buildIdentityStamp.environment -ne $board -or
+				$buildIdentityStamp.firmwareSha256 -ne $buildBinaryHash) {
+				throw "$label firmware image identity does not match the prepared source snapshot."
+			}
+			Copy-Item -LiteralPath $buildBinary -Destination $binary
 			$partitionBytes = [IO.File]::ReadAllBytes((Join-Path $buildRoot 'partitions.bin'))
 			$slots = @(for ($offset = 0; $offset + 32 -le $partitionBytes.Length; $offset += 32) {
 				if ([BitConverter]::ToUInt16($partitionBytes, $offset) -ne 0x50AA) { continue }
@@ -172,6 +210,10 @@ try {
 				runSummary = $runSummaryRelative
 				binary = ".pio/descriptor-fixture/$runId/$label.bin"; bytes = $binarySize
 				sha256 = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+				firmwareIdentity = [ordered]@{
+					revision = $buildIdentityStamp.revision; sourceId = $buildIdentityStamp.sourceId
+					environment = $buildIdentityStamp.environment; firmwareSha256 = $buildIdentityStamp.firmwareSha256
+				}
 				otaSlotSizes = $slots; webAsset = $assetPresent
 				warnings = @([regex]::Matches($logText, '(?m)^.*warning:.*$') | ForEach-Object { $_.Value.Trim() })
 				log = ".pio/descriptor-fixture/$runId/$label.log"
@@ -203,6 +245,7 @@ try {
 			finalSourceInputs = $finalHashes
 			sourceInputsUnchanged = $sourceUnchanged
 			changedSourceInputs = $sourceChangePaths
+			firmwareIdentityPreparation = $identityPreparation
 			nativeChecks = @($nativeChecks)
 		})
 	}

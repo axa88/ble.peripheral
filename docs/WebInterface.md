@@ -25,7 +25,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Firmware build failed.' }
 2. Open the device root page in a browser at its current HTTP address. The page is served at the root path.
 3. When requested, use the web credential provisioned in the ignored local configuration. Keep that value out of source control, logs, screenshots, and this guide.
 
-The page header shows this peripheral's device name, IP address, and Bluetooth address. These identify the device serving the page; the Bluetooth address is not a connected central's address.
+The page header shows this peripheral's device name, IP address, Bluetooth address, source revision, source fingerprint, and PlatformIO environment. These identify the device serving the page; the Bluetooth address is not a connected central's address. Reload the page after uploading firmware so its JavaScript is refreshed.
 
 The service uses plain HTTP. It does not encrypt browser traffic with TLS. Use it only on a trusted local network; do not expose or forward it to the public internet.
 
@@ -59,26 +59,39 @@ Connection parameters has Min ms, Max ms, Latency, and Timeout ms fields; choose
 
 ### GATT controls
 
-GATT Controls offers the original notification and indication characteristics plus the new Temperature Scalar. The selector shows names and UUIDs; the details show a boot-scoped target identity, properties, current stored bytes, baseline bytes, and whether the current value is modified. Central ATT writes to the original characteristics are reflected on subsequent polling.
+GATT Controls offers the original notification and indication characteristics plus Temperature Scalar. The selector shows names and UUIDs; the details show a boot-scoped target identity, properties, and current stored bytes. Central ATT writes to the original characteristics are reflected on subsequent polling.
 
-Enter complete hexadecimal byte pairs, compact or separated by ASCII whitespace. Empty input publishes an empty value. Send notification or Send indication replaces stored bytes, verifies them, and requests publication through normal subscriber handling. This local operation does not invoke an ATT write callback. A Dispatched result confirms the request path, not receipt, subscriber presence, or indication acknowledgement; verify exact bytes on the external BLE central.
+Enter complete hexadecimal byte pairs, compact or separated by ASCII whitespace. Empty input publishes an empty value. Send notification or Send indication stores and verifies the bytes, then requests an update through normal subscriber handling. This does not invoke an ATT write callback. A Dispatched result identifies the request path, not client receipt, subscriber presence, or indication acknowledgement.
 
-The Web payload cap is 256 bytes. Publication also respects the characteristic's stored maximum and every connected peer's negotiated `ATT_MTU - 3`, including unsubscribed peers. At MTU 23, 20 bytes are allowed and 21 are rejected before mutation. The editor shows the payload byte count beside the send limit and explains any excess before submission. Send is disabled for invalid or oversized drafts; Restore remains available when the device is ready and no operation is busy. Stored capacity and the Web cap are shown separately from the transport limit. There is no fragmentation or automatic MTU negotiation. The HTTP body remains limited to 1,024 bytes; the browser submits compact hex. If dispatch fails after storage succeeds, the modified bytes remain stored and the result distinguishes those outcomes.
+The send limit is the maximum number of value bytes in one update, not the characteristic's storage capacity. It is the smallest of the 256-byte Web cap, the characteristic's stored maximum, and every connected peer's negotiated `ATT_MTU - 3`. The three bytes are ATT protocol overhead. All connected peers count, including unsubscribed peers. For example, MTU 23 permits 20-byte updates; MTU 517 permits 514 transport bytes, while this Web interface still caps requests at 256 bytes.
 
-Restore baseline replaces stored bytes with the firmware's original baseline and verifies them without publishing. The original notification and indication baselines are 21 and 23 bytes respectively, so restoration can succeed while sending that restored value is blocked by a 20-byte transport limit. Use a shorter test value or negotiate a larger ATT MTU on every connected peer; changing the peripheral's preferred MTU does not update an existing connection. Restoration does not change descriptors. Selection, scenario prefill, page refresh, and reconnect do not restore values. Overrides disappear on reboot. Draft input survives ordinary polling and a transient GATT snapshot failure.
+The editor displays the payload byte count and authoritative send limit. Oversize feedback states the attempted bytes, applicable maximum, and negotiated-MTU calculation or local cap without prescribing remedies. Send is disabled for invalid/oversized drafts; its defensive popup reports the same constraint if invoked. Peer identities are shown only when the status snapshot agrees with the GATT snapshot; the GATT snapshot's minimum MTU, peer count, and publication limit remain authoritative. With no connected peers, the UI makes the lack of recipients explicit. Drafts survive polling and temporary snapshot loss.
 
-GATT Test Scenarios contains static instructions and expected bytes for User Description, scalar Presentation Formats and signed exponents, Aggregate Format, Valid Range, absence, and read/update cases. Fill GATT Controls only selects a target and fills input; choose Send or Restore explicitly. Descriptor inspection and acknowledged trigger writes are central-side actions. Restore baseline explicitly before canonical-value tests and avoid concurrent writes to the same target.
+There is no runtime Restore operation, saved-baseline inventory, automatic reset, or baseline button. Initial characteristic bytes remain ordinary fixture initialization. Tests construct fresh fixture state; manual scenarios state their required values explicitly. Selection, scenario prefill, refresh, reconnect, and publication do not reset other values. Overrides disappear on reboot.
 
-The additive service is `12345678-1234-5678-1234-56789abcdf00`; it is discoverable after connecting but is not added to advertisements. Temperature Scalar is `...df05` (`EB 00`, sint16/exponent -1, 23.5 degrees Celsius). Subscribe and write acknowledged `01` to `...df07` to publish its current stored bytes, including in non-web builds. See the [canonical fixture manifest and acceptance plan](Completed/DescriptorDrivenGattFixture/Ble.Peripheral.DescriptorDrivenGattFixture.Plan.md) for all seven targets, exact descriptor bytes, and platform limitations.
+GATT Test Scenarios contains static instructions and expected bytes for User Description, scalar Presentation Formats and signed exponents, Aggregate Format, Valid Range, absence, and read/update cases. Fill GATT Controls only selects a target and fills input; Send is explicit. Descriptor inspection and acknowledged trigger writes are central-side actions. Use a fresh fixture or set the known sample bytes required by a canonical-value test, and avoid concurrent writes to the same target.
 
-The HTTP API adds authenticated `GET /api/gatt` snapshots and deferred `POST /api/gatt` commands:
+The additive service is `12345678-1234-5678-1234-56789abcdf00`; it is discoverable after connecting but not advertised. Temperature Scalar is `...df05` (initial `EB 00`, sint16/exponent -1, 23.5 degrees Celsius). Subscribe and write acknowledged `01` to `...df07` to request its current stored bytes, including in non-Web builds. The [fixture specification](Completed/DescriptorDrivenGattFixture/Ble.Peripheral.DescriptorDrivenGattFixture.Plan.md) documents the seven targets and metadata; its historical Restore contract was superseded by the owner-requested removal described here.
+
+The authenticated API provides `GET /api/gatt` snapshots and one deferred `POST /api/gatt` command:
 
 ```json
 {"op":"publishValue","targetId":"<current opaque targetId>","hex":"F500"}
-{"op":"restoreValue","targetId":"<current opaque targetId>"}
 ```
 
-Use the current snapshot's target identity and normal CSRF header. Poll `/api/status` for the returned operation ID. Result data separates `storageVerified`, `publicationAttempted`, and `publicationDispatched`. A stale boot identity, invalid hex, or oversize payload cannot select an arbitrary attribute. GATT value access is serialized on the NimBLE host event queue; an unstarted request that times out is canceled. If execution reports host contention, refresh and retry explicitly; it does not publish automatically later. Timing limits and pending device HTTP/security and physical delivery checks are listed in the [implementation record](Completed/DescriptorDrivenGattFixture/Completion.md).
+Snapshots include `minimumPeerMtu` and `connectedPeerCount` from the same host observation as `publicationLimit`. Zero peers is distinct from a connected peer whose MTU is not yet available. Use the current snapshot's target identity and normal CSRF header. Poll `/api/status` for the operation ID; `storageVerified`, `publicationAttempted`, and `publicationDispatched` distinguish outcomes. Invalid identity/hex/length cannot select an arbitrary attribute. Host execution rechecks current bounds and reports actual sizes on a late rejection. An unstarted timed-out request is canceled; contention does not publish automatically later. Transport delivery and live HTTP/security still require device acceptance.
+
+### Source revision
+
+`firmware-revision.json` records the source revision and its content fingerprint. A common PlatformIO pre-hook synchronizes the generated Web asset, detects project source changes, advances the revision once for a changed snapshot, and emits an environment-specific identity header. Rebuilding unchanged sources keeps the same revision; changing only the build invocation does not advance it. The tracked state survives `pio run --target clean` and should be committed with its source changes.
+
+CLI and VS Code firmware builds use the same hook. The post hook stamps the resulting application binary and verifies the current source identity before an upload; a stale `nobuild upload` cannot silently upload a mismatched source snapshot. The owner remains responsible for uploading. To synchronize source identity explicitly from the repository root:
+
+```powershell
+python tools/firmware_revision.py prepare
+```
+
+The displayed revision identifies project source, not negotiated MTU or client subscriptions. Source fingerprints exclude generated build outputs, revision state/locks, and ignored local credential configuration. Read the displayed revision, environment, and source fingerprint when recording device acceptance.
 
 ### Overview and operation details
 

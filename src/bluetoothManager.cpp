@@ -1,6 +1,7 @@
 // BluetoothManager.cpp
 #include "BluetoothManager.h"
 #include "fixtureGatt.h"
+#include "firmwareIdentity.h"
 #include <Arduino.h>
 #include "pairingCoordinator.h"
 #include "bleValidation.h"
@@ -688,6 +689,7 @@ void BluetoothManager::SetupBluetooth()
 {
 	if (initialized_)
 		return;
+	Serial.println(FirmwareIdentity::summary());
 
 	bootId_ = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
 	if (!bootId_) bootId_ = 1;

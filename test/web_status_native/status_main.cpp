@@ -148,7 +148,10 @@ namespace
 #endif
 
 	cJSON* makeStatusEnvelope(const WorkerRecord* record, bool omitGattDispatch = false,
-		bool wrongGattType = false, bool mixGattData = false, bool omitOperationData = false)
+		bool wrongGattType = false, bool mixGattData = false, bool omitOperationData = false,
+		bool omitFirmwareRevision = false, bool wrongFirmwareSourceType = false,
+		bool wrongFirmwareRevisionType = false, bool malformedFirmwareSource = false,
+		bool wrongFirmwareEnvironmentType = false)
 	{
 		cJSON* root = cJSON_CreateObject();
 		if (!root) return nullptr;
@@ -162,6 +165,23 @@ namespace
 		device = makeObject(root, "device");
 		if (!device || !addString(device, "name", "Test Device") ||
 			!addString(device, "address", "AA:BB:CC:DD:EE:FF") || !addNumber(device, "uptimeMs", 1)) goto fail;
+		if (wrongFirmwareRevisionType)
+		{
+			if (!addString(device, "firmwareRevision", "12")) goto fail;
+		}
+		else if (!omitFirmwareRevision && !addNumber(device, "firmwareRevision", 12)) goto fail;
+		if (wrongFirmwareSourceType)
+		{
+			if (!addNumber(device, "firmwareSource", 1)) goto fail;
+		}
+		else if (!addString(device, "firmwareSource", malformedFirmwareSource ?
+			"g123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" :
+			"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")) goto fail;
+		if (wrongFirmwareEnvironmentType)
+		{
+			if (!addNumber(device, "firmwareEnvironment", 1)) goto fail;
+		}
+		else if (!addString(device, "firmwareEnvironment", "test")) goto fail;
 
 		network = makeObject(root, "network");
 		if (!network || !addBool(network, "connected", false) || !addString(network, "ip", "") ||
@@ -231,9 +251,14 @@ namespace
 	}
 
 	bool statusValid(const WorkerRecord* record, bool omitGattDispatch = false,
-		bool wrongGattType = false, bool mixGattData = false, bool omitOperationData = false)
+		bool wrongGattType = false, bool mixGattData = false, bool omitOperationData = false,
+		bool omitFirmwareRevision = false, bool wrongFirmwareSourceType = false,
+		bool wrongFirmwareRevisionType = false, bool malformedFirmwareSource = false,
+		bool wrongFirmwareEnvironmentType = false)
 	{
-		cJSON* root = makeStatusEnvelope(record, omitGattDispatch, wrongGattType, mixGattData, omitOperationData);
+		cJSON* root = makeStatusEnvelope(record, omitGattDispatch, wrongGattType, mixGattData, omitOperationData,
+			omitFirmwareRevision, wrongFirmwareSourceType, wrongFirmwareRevisionType, malformedFirmwareSource,
+			wrongFirmwareEnvironmentType);
 		if (!root) return false;
 		const bool valid = WebStatusTest::statusIsComplete(root, advertisingConfigs, peers, bondCount);
 		cJSON_Delete(root);
@@ -284,9 +309,9 @@ namespace
 			const cJSON* indicate = cJSON_GetObjectItemCaseSensitive(item, "indicate");
 			const cJSON* maxLength = cJSON_GetObjectItemCaseSensitive(item, "maxLength");
 			const cJSON* publicationLimit = cJSON_GetObjectItemCaseSensitive(item, "publicationLimit");
+			const cJSON* minimumPeerMtu = cJSON_GetObjectItemCaseSensitive(item, "minimumPeerMtu");
+			const cJSON* connectedPeerCount = cJSON_GetObjectItemCaseSensitive(item, "connectedPeerCount");
 			const cJSON* currentHex = cJSON_GetObjectItemCaseSensitive(item, "currentHex");
-			const cJSON* baselineHex = cJSON_GetObjectItemCaseSensitive(item, "baselineHex");
-			const cJSON* modified = cJSON_GetObjectItemCaseSensitive(item, "modified");
 			size_t fieldCount = 0;
 			for (const cJSON* field = item ? item->child : nullptr; field; field = field->next) ++fieldCount;
 			matches = item && fieldCount == 11 && cJSON_IsString(targetId) &&
@@ -298,9 +323,9 @@ namespace
 				cJSON_IsTrue(notify) == (i != 1) && cJSON_IsTrue(indicate) == (i == 1) &&
 				cJSON_IsNumber(maxLength) && maxLength->valuedouble == 512 &&
 				cJSON_IsNumber(publicationLimit) && publicationLimit->valuedouble == 20 &&
-				cJSON_IsString(currentHex) && std::strcmp(currentHex->valuestring, hexValues[i]) == 0 &&
-				cJSON_IsString(baselineHex) && std::strcmp(baselineHex->valuestring, hexValues[i]) == 0 &&
-				cJSON_IsBool(modified) && !cJSON_IsTrue(modified);
+				cJSON_IsNumber(minimumPeerMtu) && minimumPeerMtu->valuedouble == 23 &&
+				cJSON_IsNumber(connectedPeerCount) && connectedPeerCount->valuedouble == 2 &&
+				cJSON_IsString(currentHex) && std::strcmp(currentHex->valuestring, hexValues[i]) == 0;
 		}
 		cJSON_Delete(root);
 		return matches;
@@ -427,11 +452,11 @@ FixtureGatt::WebResult FixtureGatt::GetValues()
 	}
 	return {Outcome::Ready, "Current stored values observed.", {
 		{{0x123456789ABCDEF0ULL, 1}, "Original notification", "12345678-1234-5678-1234-56789abcdef0",
-			"12345678-1234-5678-1234-56789abcdef2", NIMBLE_PROPERTY::NOTIFY, 512, 20, {0x01, 0x02}, {0x01, 0x02}},
+			"12345678-1234-5678-1234-56789abcdef2", NIMBLE_PROPERTY::NOTIFY, 512, 20, 23, 2, {0x01, 0x02}},
 		{{0x123456789ABCDEF0ULL, 2}, "Original indication", "12345678-1234-5678-1234-56789abcdef0",
-			"12345678-1234-5678-1234-56789abcdef3", NIMBLE_PROPERTY::INDICATE, 512, 20, {0x03, 0x04}, {0x03, 0x04}},
+			"12345678-1234-5678-1234-56789abcdef3", NIMBLE_PROPERTY::INDICATE, 512, 20, 23, 2, {0x03, 0x04}},
 		{{0x123456789ABCDEF0ULL, 3}, "Temperature Scalar", "12345678-1234-5678-1234-56789abcdf00",
-			"12345678-1234-5678-1234-56789abcdf05", NIMBLE_PROPERTY::NOTIFY, 512, 20, {0xEB, 0x00}, {0xEB, 0x00}}
+			"12345678-1234-5678-1234-56789abcdf05", NIMBLE_PROPERTY::NOTIFY, 512, 20, 23, 2, {0xEB, 0x00}}
 	}};
 }
 
@@ -472,8 +497,6 @@ int main()
 		SlotState::Done, true, true, true);
 	const WorkerRecord publishFailure = makeGattRecord(WorkerOperation::PublishValue, Result::Failed,
 		SlotState::Done, true, true, false);
-	const WorkerRecord restore = makeGattRecord(WorkerOperation::RestoreValue, Result::Applied,
-		SlotState::Done, true, false, false);
 	const WorkerRecord preStorageFailure = makeGattRecord(WorkerOperation::PublishValue, Result::Failed,
 		SlotState::Done, false, false, false);
 	const WorkerRecord missingData = makeGattRecord(WorkerOperation::PublishValue, Result::Dispatched,
@@ -488,9 +511,13 @@ int main()
 	}};
 
 	if (!require(statusValid(nullptr), "baseline status without last operation passes")) return 1;
+	if (!require(!statusValid(nullptr, false, false, false, false, true), "missing firmware revision is rejected")) return 1;
+	if (!require(!statusValid(nullptr, false, false, false, false, false, true), "wrong-typed firmware source is rejected")) return 1;
+	if (!require(!statusValid(nullptr, false, false, false, false, false, false, true), "wrong-typed firmware revision is rejected")) return 1;
+	if (!require(!statusValid(nullptr, false, false, false, false, false, false, false, true), "malformed firmware source is rejected")) return 1;
+	if (!require(!statusValid(nullptr, false, false, false, false, false, false, false, false, true), "wrong-typed firmware environment is rejected")) return 1;
 	if (!require(statusValid(&publish), "successful publish record with all three booleans passes")) return 1;
 	if (!require(statusValid(&publishFailure), "failed publish record with all three booleans passes")) return 1;
-	if (!require(statusValid(&restore), "restore record with all three booleans passes")) return 1;
 	if (!require(statusValid(&preStorageFailure), "pre-storage failure record with all three booleans passes")) return 1;
 	if (!require(!statusValid(&missingData), "completed GATT operation without data is rejected")) return 1;
 	if (!require(statusValid(&running), "running GATT operation without result data remains valid")) return 1;
@@ -528,7 +555,7 @@ int main()
 	const size_t gattAllocationCount = allocator.calls;
 	WebStatusTest::disarmAllocationFailure();
 	if (!require(gattSnapshotSent && verifyGattSnapshot(WebStatusTest::response.json),
-		"extracted getGatt serializes all three exact target records and fields")) return 1;
+		"extracted getGatt serializes all three exact target records and eleven fields")) return 1;
 	for (size_t ordinal = 1; ordinal <= gattAllocationCount; ++ordinal)
 	{
 		WebStatusTest::armAllocationFailure(ordinal);
@@ -562,11 +589,6 @@ int main()
 		if (attempt == 0) firstResponse = WebStatusTest::response.json;
 		else if (!require(WebStatusTest::response.json == firstResponse, "repeated status output is deterministic")) return 1;
 	}
-	WebStatusTest::currentOperation = &restore;
-	if (!require(WebStatusTest::getStatus(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
-		WebStatusTest::response.sentJson && inspectGattFlags(WebStatusTest::response.json.c_str(), true, false, false),
-		"extracted getStatus maps restore response to 200 JSON")) return 1;
-
 	WebStatusTest::currentOperation = &publish;
 	WebStatusTest::makeStatusMode = WebStatusTest::MakeStatusMode::Busy;
 	if (!require(WebStatusTest::getStatus(&request) == ESP_OK && WebStatusTest::response.status == 409 &&

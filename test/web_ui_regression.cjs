@@ -201,7 +201,10 @@ async function main() {
   vm.runInContext(scriptMatch[1], context, { filename: 'web/index.html' });
 
   const status = overrides => ({
-    device: { name: 'WROVER', address: 'AA:BB:CC:DD:EE:FF' },
+    device: {
+      name: 'WROVER', address: 'AA:BB:CC:DD:EE:FF', firmwareRevision: 42,
+      firmwareSource: '0123456789abcdef'.repeat(4), firmwareEnvironment: 'wrover'
+    },
     network: { ip: '192.0.2.4', hostname: 'ble-unit.local' },
     preferredMtu: 247,
     advertising: [{
@@ -238,6 +241,12 @@ async function main() {
   assert.equal(get('restartAction').disabled, false);
   assert.equal(get('io').value, '3');
   assert.equal(get('mtu').value, '247');
+  assert.equal(get('firmwareIdentity').textContent, 'Firmware r42 · wrover · source 0123456789ab');
+  context.testStatus = status({ device: { name: 'Old server', address: 'AA:BB:CC:DD:EE:FF' } });
+  vm.runInContext('renderStatus(testStatus)', context);
+  assert.equal(get('firmwareIdentity').textContent, 'Firmware version unavailable', 'Older servers without source identity use the fallback label');
+  context.testStatus = status();
+  vm.runInContext('renderStatus(testStatus)', context);
   assert.equal(get('flag-bond').checked, true);
   assert.equal(get('start').textContent, 'Started', 'Selected active advertising should be indicated on the start button');
   assert.equal(get('start').disabled, true);
@@ -601,34 +610,50 @@ async function main() {
   assert.equal(get('interval').dataset.dirty, 'false', 'The skipped terminal must clear the matching submitted dirty marker');
   assert.equal(vm.runInContext("submittedFields.has('op-skipped-terminal')", context), false, 'The skipped operation snapshot should be discarded');
 
-  // GATT edits, static scenario prefill, bounded requests and worker results.
-  context.testStatus = status();
+  // GATT value publication, peer limits, source identity, and polling behavior.
+  assert.doesNotMatch(html, /id="gattRestore"|gattRestore|gattBaseline|gattState|restoreValue|baselineHex/,
+    'Restore and baseline-only UI/API concepts should be removed');
+  assert.doesNotMatch(html, /Use a shorter payload|request a larger ATT MTU|minimum required MTU/,
+    'Publication-limit UI should report measurements without suggesting remedies');
+  const peer = (connectionId, address, handle, mtu) => ({
+    connectionId, address, handle, mtu, intervalMs: 30, timeoutMs: 4000, latency: 0,
+    bonded: false, encrypted: false, authenticated: false, keySize: 0
+  });
+  const peer23a = peer('peer-23a', '11:22:33:44:55:66', 1, 23);
+  const peer23b = peer('peer-23b', '22:33:44:55:66:77', 2, 23);
+  const peer517 = peer('peer-517', '33:44:55:66:77:88', 3, 517);
+  const indicationBaseline = Buffer.from('Indicate Characteristic', 'ascii').toString('hex').toUpperCase();
+  const indicationSpaced = indicationBaseline.match(/../g).join(' ');
+  assert.equal(indicationBaseline.length / 2, 23);
+  context.testStatus = status({connections: [peer23a, peer23b, peer517]});
   vm.runInContext('renderStatus(testStatus)', context);
   context.testGatt = { values: [
-    { targetId: '0123456789abcdef-00000001', name: 'Original notification', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', notify: true, indicate: false, currentHex: '0102', baselineHex: '0102', modified: false, maxLength: 512, publicationLimit: 20 },
-    { targetId: '0123456789abcdef-00000002', name: 'Original indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', notify: false, indicate: true, currentHex: '0304', baselineHex: '0304', modified: false, maxLength: 512, publicationLimit: 20 },
-    { targetId: '0123456789abcdef-00000003', name: 'Temperature Scalar', serviceUuid: 'fixture', characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', notify: true, indicate: false, currentHex: 'EB00', baselineHex: 'EB00', modified: false, maxLength: 512, publicationLimit: 20 }
+    { targetId: '0123456789abcdef-00000001', name: 'Original notification', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', notify: true, indicate: false, currentHex: '0102', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
+    { targetId: '0123456789abcdef-00000002', name: 'Original indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', notify: false, indicate: true, currentHex: indicationBaseline, maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
+    { targetId: '0123456789abcdef-00000003', name: 'Temperature Scalar', serviceUuid: 'fixture', characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', notify: true, indicate: false, currentHex: 'EB00', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 }
   ] };
   vm.runInContext('renderGatt(testGatt)', context);
   assert.equal(get('gattHex').value, '01 02');
-  assert.equal(get('gattState').textContent, 'Baseline');
+  assert.equal(get('gattCurrent').textContent, '01 02');
+  assert.equal(get('gattRestore'), null);
+  assert.equal(get('gattBaseline'), null);
+  assert.equal(get('gattState'), null);
   get('gattHex').value = 'AA BB'; get('gattHex').oninput();
-  context.testGatt.values[0].currentHex = '0908'; context.testGatt.values[0].modified = true;
+  context.testGatt.values[0].currentHex = '0908';
   vm.runInContext('renderGatt(testGatt)', context);
   assert.equal(get('gattHex').value, 'AA BB', 'Polling must preserve an in-progress GATT draft');
-  assert.equal(get('gattCurrent').textContent, '09 08', 'Observed bytes must update independently of the draft');
-  assert.match(get('gattState').textContent, /^Modified/);
+  assert.equal(get('gattCurrent').textContent, '09 08', 'Observed bytes update independently from the draft');
   vm.runInContext('renderGatt(null)', context);
   assert.equal(get('gattPublish').disabled, true);
-  assert.equal(get('gattRestore').disabled, true);
   assert.equal(get('gattHex').value, 'AA BB', 'A transient snapshot failure must preserve edits');
-  assert.equal(get('gattState').textContent, 'Unknown / unavailable');
   vm.runInContext('renderGatt(testGatt)', context);
   assert.equal(get('gattHex').value, 'AA BB', 'Recovery must also preserve the draft');
+
   const gattPosts = [];
+  let gattOperationSequence = 0;
   context.fetch = async (url, request) => {
     gattPosts.push({url, body: JSON.parse(request.body)});
-    return { ok: true, status: 202, json: async () => ({ result: 'Queued', operationId: 'gatt-op-1' }) };
+    return { ok: true, status: 202, json: async () => ({ result: 'Queued', operationId: 'gatt-op-' + (++gattOperationSequence) }) };
   };
   get('gattScenario').value = '0'; get('gattScenario').onchange();
   assert.equal(get('gattPrefill').disabled, true);
@@ -636,7 +661,7 @@ async function main() {
   get('gattScenario').value = '5'; get('gattScenario').onchange(); get('gattPrefill').onclick();
   assert.equal(get('gattTarget').value, '0123456789abcdef-00000003');
   assert.equal(get('gattHex').value, 'F5 00');
-  assert.equal(gattPosts.length, 0, 'Prefill must never send, restore or mutate firmware');
+  assert.equal(gattPosts.length, 0, 'Scenario prefill must never send or mutate firmware');
   assert.equal(vm.runInContext("parseGattHex(' 00 eb\\tF5 00 ')", context), '00EBF500');
   assert.equal(vm.runInContext("parseGattHex('')", context), '');
   for (const invalid of ['0', '0 1', '0x01', '00,FF', '0G', 'AA'.repeat(257)]) {
@@ -644,130 +669,180 @@ async function main() {
     assert.throws(() => vm.runInContext('parseGattHex(invalidGattHex)', context));
   }
   assert.equal(vm.runInContext("parseGattHex('AA'.repeat(256)).length", context), 512);
-  get('gattHex').value = 'AA'.repeat(21);
-  get('gattHex').oninput();
-  assert.equal(get('gattPublish').disabled, true, 'An oversized valid draft disables Send before the click');
-  assert.match(get('gattDraftStatus').textContent, /Payload: 21 bytes; send limit: 20 bytes \(1 too long; limited by connected-peer publication limit\)/);
-  assert.throws(() => vm.runInContext('publishGatt()', context), /publication limit/);
-  assert.equal(gattPosts.length, 0, 'Oversize must fail before an HTTP request');
-
-  get('gattHex').value = 'AA'.repeat(513); get('gattHex').oninput();
-  assert.match(get('gattDraftStatus').textContent, /Payload: 513 bytes; send limit: 20 bytes \(493 too long; limited by connected-peer publication limit\)/);
-  assert.throws(() => vm.runInContext('publishGatt()', context), /513 bytes; send limit is 20 bytes \(connected-peer publication limit\)/);
-  context.testGatt.values[2].publicationLimit = 256;
-  vm.runInContext('renderGatt(testGatt)', context);
-  get('gattHex').value = 'AA'.repeat(257); get('gattHex').oninput();
-  assert.match(get('gattDraftStatus').textContent, /Payload: 257 bytes; send limit: 256 bytes \(1 too long; limited by Web cap\)/);
-  assert.throws(() => vm.runInContext('publishGatt()', context), /257 bytes; send limit is 256 bytes \(Web cap\)/);
-  context.testGatt.values[2].maxLength = 16;
-  context.testGatt.values[2].publicationLimit = 16;
-  vm.runInContext('renderGatt(testGatt)', context);
-  get('gattHex').value = 'AA'.repeat(17); get('gattHex').oninput();
-  assert.match(get('gattDraftStatus').textContent, /Payload: 17 bytes; send limit: 16 bytes \(1 too long; limited by stored maximum\)/);
-  assert.throws(() => vm.runInContext('publishGatt()', context), /17 bytes; send limit is 16 bytes \(stored maximum\)/);
-  context.testGatt.values[2].maxLength = 512;
-  context.testGatt.values[2].publicationLimit = 20;
-  vm.runInContext('renderGatt(testGatt)', context);
-  get('gattHex').value = 'f5 00';
-  get('gattHex').oninput();
-  assert.equal(get('gattPublish').disabled, false, 'A valid draft at or below the effective limit enables Send');
-  await vm.runInContext('publishGatt()', context);
-  assert.deepEqual(gattPosts[0], { url: '/api/gatt', body: { op: 'publishValue', targetId: '0123456789abcdef-00000003', hex: 'F500' } });
-  assert.equal(get('gattRestore').disabled, true, 'Publication must use the existing worker lock');
-  context.testStatus = status({lastOperation: {operationId: 'gatt-op-1', operation: 'publishValue', target: 'fixture', state: 'Done', result: 'Dispatched', detail: 'Value stored; publication dispatched. Verify receipt on the BLE client.', data: { storageVerified: true, publicationAttempted: true, publicationDispatched: true }}});
-  vm.runInContext('renderStatus(testStatus)', context);
-  assert.match(get('feedback').textContent, /Verify receipt/);
-  assert.equal(get('gattRestore').disabled, false);
   get('gattTarget').value = '0123456789abcdef-00000002'; get('gattTarget').onchange();
   assert.equal(get('gattPublish').textContent, 'Send indication');
-  await vm.runInContext("post('gatt','restoreValue',{targetId:selectedGatt().targetId})", context);
-  assert.deepEqual(gattPosts[1].body, { op: 'restoreValue', targetId: '0123456789abcdef-00000002' });
-  assert.equal(gattPosts.length, 2, 'Restore must request only restoration');
+  get('gattHex').value = indicationSpaced; get('gattHex').oninput();
+  assert.equal(get('gattPublish').disabled, true, 'A 23-byte payload is disabled at the 20-byte peer limit');
+  assert.match(get('gattDraftStatus').textContent, /Payload: 23 bytes exceeds the current publication limit/);
+  assert.match(get('gattDraftStatus').textContent, /Maximum single update: 20 bytes \(3 too many\)/);
+  assert.match(get('gattDraftStatus').textContent, /Limiting peer\(s\): 11:22:33:44:55:66 \(handle 1, ATT MTU 23\); 22:33:44:55:66:77 \(handle 2, ATT MTU 23\)/);
+  assert.match(get('gattDraftStatus').textContent, /ATT MTU - 3 gives 20 bytes/);
+  assert.match(get('gattDraftStatus').textContent, /including unsubscribed peers/);
+  get('gattPublish').onclick();
+  assert.equal(get('errorDialog').open, true, 'A defensive oversized click displays an explanation');
+  assert.match(get('errorDetail').textContent, /Cannot send 23 bytes: current publication limit is 20 bytes; the maximum single update is 20 bytes/);
+  assert.match(get('errorDetail').textContent, /ATT MTU 23/);
+  assert.match(get('errorDetail').textContent, /ATT MTU - 3 gives 20 bytes/);
+  assert.doesNotMatch(get('errorDetail').textContent, /Use a shorter payload|request a larger ATT MTU|at least 26/);
+  assert.equal(gattPosts.length, 0, 'Oversized payloads fail before HTTP');
+  get('errorDialog').close();
 
-  // A baseline can exceed the send limit while restoration remains available.
-  const indicationBaseline = Buffer.from('Indicate Characteristic', 'ascii').toString('hex').toUpperCase();
-  const indicationBaselineSpaced = indicationBaseline.match(/../g).join(' ');
-  const indicationTargetId = '0123456789abcdef-00000002';
-  assert.equal(indicationBaseline.length / 2, 23);
-  context.testStatus = status({lastOperation: {operationId: 'gatt-op-1', operation: 'restoreValue', target: 'gatt', state: 'Done', result: 'Applied', detail: 'Baseline restored.', data: { storageVerified: true, publicationAttempted: false, publicationDispatched: false }}});
+  // An MTU-517 peer leaves the Web cap (256), not the transport, as the limiter.
+  context.testStatus = status({connections: [peer517]});
   vm.runInContext('renderStatus(testStatus)', context);
-  context.testGatt = { values: [
-    { targetId: indicationTargetId, name: 'Original indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', notify: false, indicate: true, currentHex: '01', baselineHex: indicationBaseline, modified: true, maxLength: 512, publicationLimit: 20 }
-  ] };
+  context.testGatt.values[1].publicationLimit = 256;
+  context.testGatt.values[1].minimumPeerMtu = 517;
+  context.testGatt.values[1].connectedPeerCount = 1;
   vm.runInContext('renderGatt(testGatt)', context);
-  get('gattTarget').value = indicationTargetId; get('gattTarget').onchange();
-  assert.equal(get('gattHex').value, '01');
-  assert.equal(get('gattPublish').disabled, false, 'A one-byte indication fits a 20-byte limit');
-
-  const limitPosts = [];
-  let limitOperation = 0;
-  context.fetch = async (_url, request) => {
-    limitPosts.push(JSON.parse(request.body));
-    return { ok: true, status: 202, json: async () => ({ result: 'Queued', operationId: 'limit-op-' + (++limitOperation) }) };
-  };
-  get('gattHex').value = 'AA'; get('gattHex').oninput();
+  assert.equal(get('gattHex').value, indicationSpaced, 'A polled limit increase preserves the edited payload');
+  assert.equal(get('gattPublish').disabled, false, 'The same 23-byte value fits a 256-byte publication limit');
+  assert.match(get('gattLimit').textContent, /Maximum single update: 256 bytes \(stored maximum 512 bytes; Web cap 256 bytes\)/);
+  assert.match(get('gattLimit').textContent, /Web payload cap is the binding limit/);
+  assert.doesNotMatch(get('gattLimit').textContent, /Limiting peer/);
   await vm.runInContext('publishGatt()', context);
-  assert.deepEqual(limitPosts[0], { op: 'publishValue', targetId: indicationTargetId, hex: 'AA' });
-  assert.equal(get('gattPublish').disabled, true, 'Worker busy still disables Send');
-  assert.equal(get('gattRestore').disabled, true, 'Worker busy still disables Restore');
-  context.testStatus = status({lastOperation: {operationId: 'limit-op-1', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched', detail: 'Sent.', data: { storageVerified: true, publicationAttempted: true, publicationDispatched: true }}});
-  vm.runInContext('renderStatus(testStatus)', context);
-  context.testGatt.values[0].currentHex = 'AA'; context.testGatt.values[0].modified = true;
-  vm.runInContext('renderGatt(testGatt)', context);
+  assert.deepEqual(gattPosts[0], {
+    url: '/api/gatt', body: {op: 'publishValue', targetId: '0123456789abcdef-00000002', hex: indicationBaseline}
+  });
+  assert.equal(get('gattPublish').disabled, true, 'A queued publish uses the existing worker lock');
 
-  assert.equal(get('gattRestore').disabled, false, 'Restore remains available with a sendable draft');
-  await vm.runInContext("post('gatt','restoreValue',{targetId:selectedGatt().targetId})", context);
-  assert.deepEqual(limitPosts[1], { op: 'restoreValue', targetId: indicationTargetId });
-  context.testStatus = status({lastOperation: {operationId: 'limit-op-2', operation: 'restoreValue', target: 'gatt', state: 'Done', result: 'Applied', detail: 'Baseline restored.', data: { storageVerified: true, publicationAttempted: false, publicationDispatched: false }}});
+  context.testStatus = status({connections: [peer517], lastOperation: {
+    operationId: 'gatt-op-1', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched',
+    detail: 'Value stored; publication dispatched. Verify receipt on the BLE client.',
+    data: {storageVerified: true, publicationAttempted: true, publicationDispatched: true}
+  }});
   vm.runInContext('renderStatus(testStatus)', context);
-  context.testGatt.values[0].currentHex = indicationBaseline; context.testGatt.values[0].modified = false;
+  assert.match(get('feedback').textContent, /Verify receipt/);
+  context.testGatt.values[1].currentHex = indicationBaseline;
   vm.runInContext('renderGatt(testGatt)', context);
-  assert.equal(get('gattHex').value, indicationBaselineSpaced, 'After restoration, the clean draft follows the full baseline');
-  assert.equal(get('gattPublish').disabled, true, 'The 23-byte baseline is blocked by a 20-byte effective limit');
-  assert.equal(get('gattRestore').disabled, false, 'Restore remains available when the displayed baseline exceeds the send limit');
-  assert.match(get('gattDraftStatus').textContent, /Payload: 23 bytes; send limit: 20 bytes \(3 too long; limited by connected-peer publication limit\)/);
-  assert.match(get('gattDraftStatus').textContent, /Restore stores all 23 baseline bytes without publishing/);
-  assert.match(get('gattDraftStatus').textContent, /negotiated ATT MTU of at least 26 on every connected peer/);
-  assert.throws(() => vm.runInContext('publishGatt()', context), /23 bytes; send limit is 20 bytes/);
-  assert.equal(limitPosts.length, 2, 'A defensive oversized publish sends no HTTP request');
-  await vm.runInContext("post('gatt','restoreValue',{targetId:selectedGatt().targetId})", context);
-  assert.deepEqual(limitPosts[2], { op: 'restoreValue', targetId: indicationTargetId }, 'Restore accepts an oversized baseline without a value payload');
-  assert.equal(get('gattRestore').disabled, true, 'An accepted restore then follows the existing worker lock');
-  context.testStatus = status({lastOperation: {operationId: 'limit-op-3', operation: 'restoreValue', target: 'gatt', state: 'Done', result: 'Applied', detail: 'Baseline restored.', data: { storageVerified: true, publicationAttempted: false, publicationDispatched: false }}});
+  assert.equal(get('gattHex').value, indicationSpaced);
+
+  // Each local cap is explained separately from the negotiated peer limit.
+  context.testGatt.values[1].maxLength = 512;
+  context.testGatt.values[1].publicationLimit = 256;
+  context.testGatt.values[1].minimumPeerMtu = 517;
+  context.testGatt.values[1].connectedPeerCount = 1;
+  vm.runInContext('renderGatt(testGatt)', context);
+  get('gattHex').value = 'AA'.repeat(257); get('gattHex').oninput();
+  assert.equal(get('gattPublish').disabled, true);
+  assert.match(get('gattDraftStatus').textContent, /257 bytes exceeds the current publication limit/);
+  assert.match(get('gattDraftStatus').textContent, /Maximum single update: 256 bytes \(1 too many\)/);
+  assert.match(get('gattDraftStatus').textContent, /Web payload cap is the binding limit/);
+  get('gattPublish').onclick();
+  assert.equal(get('errorDialog').open, true, 'A defensive click shows the binding cap');
+  assert.match(get('errorDetail').textContent, /Cannot send 257 bytes: current publication limit is 256 bytes; the maximum single update is 256 bytes/);
+  assert.match(get('errorDetail').textContent, /Web payload cap is 256 bytes/);
+  get('errorDialog').close();
+  get('gattHex').value = 'AA'.repeat(513); get('gattHex').oninput();
+  assert.match(get('gattDraftStatus').textContent, /Payload: 513 bytes exceeds/);
+  assert.match(get('gattDraftStatus').textContent, /Maximum single update: 256 bytes \(257 too many\)/);
+  assert.match(get('gattDraftStatus').textContent, /Web cap/);
+  context.testGatt.values[1].maxLength = 16;
+  context.testGatt.values[1].publicationLimit = 16;
+  context.testGatt.values[1].minimumPeerMtu = 517;
+  context.testGatt.values[1].connectedPeerCount = 1;
+  vm.runInContext('renderGatt(testGatt)', context);
+  get('gattHex').value = 'AA'.repeat(17); get('gattHex').oninput();
+  assert.match(get('gattDraftStatus').textContent, /Maximum single update: 16 bytes \(1 too many\)/);
+  assert.match(get('gattDraftStatus').textContent, /stored maximum is the binding limit/);
+
+  // Connection and GATT snapshots can race; avoid attributing the limit to a peer.
+  context.testStatus = status({connections: [peer23a]});
   vm.runInContext('renderStatus(testStatus)', context);
-
-  context.testGatt.values[0].publicationLimit = 23;
+  context.testGatt.values[1].maxLength = 512;
+  context.testGatt.values[1].publicationLimit = 256;
+  context.testGatt.values[1].minimumPeerMtu = 517;
+  context.testGatt.values[1].connectedPeerCount = 1;
   vm.runInContext('renderGatt(testGatt)', context);
-  assert.equal(get('gattHex').value, indicationBaselineSpaced, 'Polling a larger limit preserves the baseline draft');
-  assert.equal(get('gattPublish').disabled, false, 'The 23-byte baseline is enabled when the effective limit reaches 23');
-  await vm.runInContext('publishGatt()', context);
-  assert.deepEqual(limitPosts[3], { op: 'publishValue', targetId: indicationTargetId, hex: indicationBaseline });
-  assert.equal(get('gattPublish').disabled, true, 'A queued baseline publish uses the existing worker lock');
-  assert.equal(get('gattRestore').disabled, true, 'The same worker lock also disables Restore');
+  assert.match(get('gattLimit').textContent, /Connection details are refreshing/);
+  assert.doesNotMatch(get('gattLimit').textContent, /Limiting peer/);
+  get('gattHex').value = 'AA'.repeat(257); get('gattHex').oninput();
+  assert.match(get('gattDraftStatus').textContent, /Payload: 257 bytes exceeds/);
+  assert.match(get('gattDraftStatus').textContent, /publication limit: 256 bytes/);
+  assert.match(get('gattDraftStatus').textContent, /Connection details are refreshing/);
 
-  context.testStatus = status({lastOperation: {operationId: 'limit-op-4', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched', detail: 'Sent.', data: { storageVerified: true, publicationAttempted: true, publicationDispatched: true }}});
+  // A GATT snapshot can name the limiting MTU while the status peer list is stale.
+  context.testStatus = status({connections: [peer517]});
   vm.runInContext('renderStatus(testStatus)', context);
-  get('gattHex').value = '01 02 03'; get('gattHex').oninput();
-  context.testGatt.values[0].publicationLimit = 2;
+  context.testGatt.values[1].publicationLimit = 20;
+  context.testGatt.values[1].minimumPeerMtu = 23;
+  context.testGatt.values[1].connectedPeerCount = 1;
   vm.runInContext('renderGatt(testGatt)', context);
-  assert.equal(get('gattHex').value, '01 02 03', 'A polled limit drop preserves the edited draft');
-  assert.equal(get('gattPublish').disabled, true, 'A limit drop immediately disables an oversized draft');
-  assert.match(get('gattDraftStatus').textContent, /Payload: 3 bytes; send limit: 2 bytes \(1 too long/);
-  context.testGatt.values[0].publicationLimit = 23;
-  vm.runInContext('renderGatt(testGatt)', context);
-  assert.equal(get('gattHex').value, '01 02 03', 'Limit recovery preserves the same draft');
-  assert.equal(get('gattPublish').disabled, false, 'A polled limit recovery re-enables a valid draft');
+  assert.match(get('gattLimit').textContent, /GATT snapshot minimum connected-peer ATT MTU is 23/);
+  assert.match(get('gattLimit').textContent, /Connection details are refreshing/);
+  assert.doesNotMatch(get('gattLimit').textContent, /Limiting peer\(s\):/);
+  assert.doesNotMatch(get('gattLimit').textContent, /33:44:55:66:77:88/);
+  get('gattHex').value = indicationSpaced; get('gattHex').oninput();
+  get('gattPublish').onclick();
+  assert.equal(get('errorDialog').open, true);
+  assert.match(get('errorDetail').textContent, /GATT snapshot minimum connected-peer ATT MTU is 23/);
+  assert.doesNotMatch(get('errorDetail').textContent, /33:44:55:66:77:88/);
+  assert.equal(gattPosts.length, 1, 'A locally oversized payload with inconsistent peers makes no HTTP request');
+  get('errorDialog').close();
 
+  // With no peers, publication changes storage and nobody receives an update.
+  context.testStatus = status({connections: []});
+  vm.runInContext('renderStatus(testStatus)', context);
+  context.testGatt.values[1].publicationLimit = 256;
+  context.testGatt.values[1].minimumPeerMtu = 0;
+  context.testGatt.values[1].connectedPeerCount = 0;
+  vm.runInContext('renderGatt(testGatt)', context);
+  assert.match(get('gattLimit').textContent, /No connected peers are reported; nobody can receive an update now/);
+  assert.match(get('gattLimit').textContent, /Send only changes the stored value/);
+  get('gattHex').value = '01'; get('gattHex').oninput();
+  assert.equal(get('gattPublish').disabled, false, 'A valid payload may still be stored without peers');
+  assert.match(get('gattLimit').textContent, /nobody can receive/);
+
+  // Invalid, empty, one-byte, and worker-busy behavior.
+  context.testStatus = status({connections: [peer517]});
+  vm.runInContext('renderStatus(testStatus)', context);
+  context.testGatt.values[1].maxLength = 512;
+  context.testGatt.values[1].publicationLimit = 256;
+  context.testGatt.values[1].minimumPeerMtu = 517;
+  context.testGatt.values[1].connectedPeerCount = 1;
+  vm.runInContext('renderGatt(testGatt)', context);
   get('gattHex').value = '0'; get('gattHex').oninput();
-  assert.equal(get('gattPublish').disabled, true, 'Invalid hex disables only Send');
-  assert.equal(get('gattRestore').disabled, false, 'Invalid hex does not disable Restore');
+  assert.equal(get('gattPublish').disabled, true, 'Invalid hexadecimal disables Send');
   assert.match(get('gattDraftStatus').textContent, /invalid hexadecimal/);
-  get('gattHex').value = ''; get('gattHex').oninput();
-  assert.equal(get('gattDraftStatus').textContent, 'Payload: 0 bytes. Send limit: 23 bytes.');
-  assert.equal(get('gattPublish').disabled, false, 'Empty publication remains valid');
+  get('gattHex').value = '01'; get('gattHex').oninput();
+  assert.equal(get('gattPublish').disabled, false, 'A one-byte update is allowed');
   await vm.runInContext('publishGatt()', context);
-  assert.deepEqual(limitPosts[4], { op: 'publishValue', targetId: indicationTargetId, hex: '' });
+  assert.deepEqual(gattPosts[1].body, {op: 'publishValue', targetId: '0123456789abcdef-00000002', hex: '01'});
+  assert.equal(get('gattPublish').disabled, true, 'A queued operation disables Send');
+  context.testStatus = status({connections: [peer517], lastOperation: {
+    operationId: 'gatt-op-2', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched',
+    detail: 'Value stored; publication dispatched.',
+    data: {storageVerified: true, publicationAttempted: true, publicationDispatched: true}
+  }});
+  vm.runInContext('renderStatus(testStatus)', context);
+  get('gattHex').value = ''; get('gattHex').oninput();
+  assert.equal(get('gattDraftStatus').textContent, 'Payload: 0 bytes. Maximum single update: 256 bytes.');
+  assert.equal(get('gattPublish').disabled, false, 'An empty publication remains valid');
+  await vm.runInContext('publishGatt()', context);
+  assert.deepEqual(gattPosts[2].body, {op: 'publishValue', targetId: '0123456789abcdef-00000002', hex: ''});
+  context.testStatus = status({connections: [peer517], lastOperation: {
+    operationId: 'gatt-op-3', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched',
+    detail: 'Empty value stored and publication dispatched.',
+    data: {storageVerified: true, publicationAttempted: true, publicationDispatched: true}
+  }});
+  vm.runInContext('renderStatus(testStatus)', context);
 
+  // A stale client snapshot must surface the server's numeric rejection detail.
+  const serverDetail = 'Cannot publish 23 bytes: current publication limit is 20 bytes; maximum single update is 20 bytes (stored maximum 512 bytes; Web cap 256 bytes). Connected peers: 2. Smallest negotiated ATT MTU: 23; ATT MTU - 3 gives 20 value bytes. Every connected peer, including unsubscribed peers, must fit.';
+  context.fetch = async (_url, request) => {
+    gattPosts.push({url: '/api/gatt', body: JSON.parse(request.body)});
+    return {ok: false, status: 400, json: async () => ({result: 'InvalidArgument', detail: serverDetail})};
+  };
+  get('gattHex').value = indicationSpaced; get('gattHex').oninput();
+  context.testGatt.values[1].publicationLimit = 256;
+  vm.runInContext('renderGatt(testGatt)', context);
+  await assert.rejects(vm.runInContext('publishGatt()', context), /Cannot publish 23 bytes: current publication limit is 20 bytes/);
+  assert.equal(get('errorDialog').open, true);
+  assert.ok(get('errorDetail').textContent.startsWith(serverDetail), 'A changed server limit is reported with its current numeric reason');
+  assert.match(get('errorDetail').textContent, /Smallest negotiated ATT MTU: 23; ATT MTU - 3 gives 20 value bytes/);
+  assert.match(get('errorDetail').textContent, /Every connected peer, including unsubscribed peers/);
+  assert.match(get('errorDetail').textContent, /Connection details are refreshing; server-reported peer data is authoritative and page peer addresses are not attributed/);
+  assert.doesNotMatch(get('errorDetail').textContent, /33:44:55:66:77:88/);
+  assert.equal(gattPosts.length, 4, 'Only valid payloads and the stale-snapshot check reach HTTP');
   console.log('web UI regression checks passed (including GATT controls and scenarios)');
 }
 

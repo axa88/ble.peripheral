@@ -1,5 +1,13 @@
 #include "startup_support.h"
 
+namespace FirmwareIdentity
+{
+	uint32_t revision() { return 7; }
+	const char* sourceId() { return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"; }
+	const char* environment() { return "native-startup"; }
+	const char* summary() { return "Firmware revision 7 | source 0123456789ab | environment native-startup"; }
+}
+
 namespace
 {
 	NimBLEServer server;

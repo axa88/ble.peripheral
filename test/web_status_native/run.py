@@ -47,6 +47,10 @@ def cjson_paths() -> tuple[Path, Path]:
 
 def imported_bodies() -> dict[str, str]:
 	web = (ROOT / "src" / "webInterface.cpp").read_text(encoding="utf-8")
+	if "restoreValue" in web or "WorkerOperation::RestoreValue" in web:
+		raise RuntimeError("removed restoreValue route/worker handling remains in production webInterface.cpp")
+	if 'if (op != "publishValue") return unsupported(detail, "Unknown GATT operation.");' not in web:
+		raise RuntimeError("the GATT route no longer rejects operations other than publishValue")
 	signatures = {
 		"operation_name": "std::string_view operationName(const WorkerCommand& command)",
 		"state_name": "const char* stateName(SlotState state)",
@@ -92,7 +96,7 @@ def generated_source(bodies: dict[str, str], known_bad: bool) -> str:
 	validator = make_known_bad_validator(bodies["status_validator"]) if known_bad else bodies["status_validator"]
 	gatt = make_known_bad_gatt(bodies["get_gatt"]) if known_bad else bodies["get_gatt"]
 	parts = [
-		'#include "status_test_types.h"\n#include <cstring>\n#include <initializer_list>\n\nnamespace WebStatusTest {\n',
+		'#include "status_test_types.h"\n#include <algorithm>\n#include <cmath>\n#include <cstring>\n#include <initializer_list>\n#include <limits>\n\nnamespace WebStatusTest {\n',
 		f"std::string_view operationName(const WorkerCommand& command)\n{{\n{bodies['operation_name']}\n}}\n\n",
 		f"const char* stateName(SlotState state)\n{{\n{bodies['state_name']}\n}}\n\n",
 		f"const char* resultName(Result result)\n{{\n{bodies['result_name']}\n}}\n\n",

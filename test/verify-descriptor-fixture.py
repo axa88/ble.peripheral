@@ -230,7 +230,7 @@ def main():
         enqueue_route.find("cJSON_Delete(json)") < enqueue_route.find("enqueueOperation(request, command)"),
         "request JSON is released before the owned worker command is queued",
     )
-    prepare = function_body(web, "Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& command, const char*& detail)")
+    prepare = function_body(web, "Admission prepareWorkerCommand(")
     gatt_branch = prepare[prepare.find("if (route == Route::Gatt)"):prepare.find("if (route == Route::Advertising)")]
     require(
         "hasExactKeys" in gatt_branch and "GattValue::ParseHex(hex, command.value, command.valueLength)" in gatt_branch,
@@ -240,6 +240,12 @@ def main():
     execute_host = function_body(fixture, "WebResult executeHost(const HostJob& job)")
     runtime_schema_creation = re.search(r"\b(?:createService|createCharacteristic|createDescriptor|create2904)\s*\(", execute_host)
     require(runtime_schema_creation is None, "runtime snapshots and value changes do not create or re-register GATT schema")
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    require(
+        "RestoreValue" not in web and "Work::Restore" not in fixture and
+        '"baselineHex"' not in get_gatt and "gattRestore" not in html,
+        "runtime GATT reset API, saved-baseline snapshot, and Restore UI are absent",
+    )
 
     print("STATIC ONLY: passing checks do not establish assigned handles, BLE delivery, or hardware acceptance.")
     print("STATIC ONLY: advertising scan covers known NimBLE start spellings; new wrappers or APIs need review.")

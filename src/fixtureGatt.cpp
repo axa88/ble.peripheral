@@ -60,13 +60,11 @@ namespace FixtureGatt
 			const char* name = nullptr;
 			const char* serviceUuid = nullptr;
 			const char* uuid = nullptr;
-			const uint8_t* baseline = nullptr;
-			size_t length = 0;
 		};
 		std::array<Entry, 3> entries{};
 		uint64_t inventoryBoot = 0;
 		std::atomic<bool> hostWorkPending{false};
-		enum class Work { Snapshot, Publish, Restore };
+		enum class Work { Snapshot, Publish };
 		struct HostJob
 		{
 			ble_npl_event event{};
@@ -82,16 +80,24 @@ namespace FixtureGatt
 			~HostJob() { if (done) vSemaphoreDelete(done); }
 		};
 
-		size_t publicationLimit()
+		struct PublicationLimits
 		{
-			size_t limit = GattValue::MaxWebLength;
+			size_t maximum = GattValue::MaxWebLength;
+			size_t smallestMtu = 0;
+			size_t peerCount = 0;
+		};
+
+		PublicationLimits publicationLimits()
+		{
+			PublicationLimits limits;
 			for (auto handle : fixtureServer->getPeerDevices())
 			{
-				const auto info = fixtureServer->getPeerInfoByHandle(handle);
-				const size_t mtu = info.getMTU();
-				limit = std::min(limit, mtu >= 3 ? mtu - 3 : size_t{0});
+				const size_t mtu = fixtureServer->getPeerInfoByHandle(handle).getMTU();
+				if (!limits.peerCount || mtu < limits.smallestMtu) limits.smallestMtu = mtu;
+				++limits.peerCount;
+				limits.maximum = std::min(limits.maximum, mtu >= 3 ? mtu - 3 : size_t{0});
 			}
-			return limit;
+			return limits;
 		}
 
 		WebResult executeHost(const HostJob& job)
@@ -100,7 +106,7 @@ namespace FixtureGatt
 			WebResult result;
 			if (job.work == Work::Snapshot)
 			{
-				const size_t limit = publicationLimit();
+				const auto limits = publicationLimits();
 				for (size_t i = 0; i < entries.size(); ++i)
 				{
 					const auto& entry = entries[i];
@@ -112,9 +118,10 @@ namespace FixtureGatt
 					snapshot.characteristicUuid = entry.uuid;
 					snapshot.properties = entry.characteristic->getProperties();
 					snapshot.maxLength = current.max_size();
-					snapshot.publicationLimit = std::min(limit, snapshot.maxLength);
+					snapshot.publicationLimit = std::min(limits.maximum, snapshot.maxLength);
+					snapshot.minimumPeerMtu = limits.smallestMtu;
+					snapshot.connectedPeerCount = limits.peerCount;
 					snapshot.current.assign(current.begin(), current.end());
-					snapshot.baseline.assign(entry.baseline, entry.baseline + entry.length);
 					result.values.push_back(std::move(snapshot));
 				}
 				result.outcome = Outcome::Ready;
@@ -128,24 +135,32 @@ namespace FixtureGatt
 			const auto properties = characteristic->getProperties();
 			if (!(properties & (NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE)))
 				return {Outcome::InvalidArgument, "GATT target does not support publication."};
-			const bool restore = job.work == Work::Restore;
-			const uint8_t* bytes = restore ? entry.baseline : job.bytes.data();
-			const size_t length = restore ? entry.length : job.length;
+			const uint8_t* bytes = job.bytes.data();
+			const size_t length = job.length;
 			const auto previous = characteristic->getValue();
-			if (length > previous.max_size() || (!restore && length > GattValue::MaxWebLength))
-				return {Outcome::InvalidArgument, "Value exceeds the stored-value or Web payload limit."};
-			if (!restore && length > publicationLimit())
-				return {Outcome::InvalidArgument, "Value exceeds a connected peer's ATT MTU minus 3; nothing changed."};
+			const size_t localMaximum = std::min(size_t{previous.max_size()}, GattValue::MaxWebLength);
+			if (length > localMaximum)
+			{
+				const char* reason = previous.max_size() < GattValue::MaxWebLength ? "characteristic storage" : "Web payload";
+				return {Outcome::InvalidArgument, "Cannot send " + std::to_string(length) + " bytes: the " + reason +
+					" maximum is " + std::to_string(localMaximum) + " bytes. Nothing was changed or sent."};
+			}
+			const auto limits = publicationLimits();
+			if (length > limits.maximum)
+			{
+				std::string detail = "Cannot send " + std::to_string(length) + " bytes: the connected-peer update limit is " +
+					std::to_string(limits.maximum) + " bytes. ";
+				if (limits.smallestMtu >= 3)
+					detail += "Smallest negotiated MTU " + std::to_string(limits.smallestMtu) +
+						" minus 3 protocol bytes. The limit includes every connected peer. ";
+				else detail += "Negotiated MTU is not available. ";
+				detail += "Nothing was changed or sent.";
+				return {Outcome::InvalidArgument, std::move(detail)};
+			}
 			characteristic->setValue(bytes, length);
 			if (!equals(characteristic, bytes, length))
 				return {Outcome::Failed, "Stored-value verification failed; publication was not attempted."};
 			result.storageVerified = true;
-			if (restore)
-			{
-				result.outcome = Outcome::Applied;
-				result.detail = "Baseline restored and verified; no publication requested.";
-				return result;
-			}
 			result.publicationAttempted = true;
 			result.publicationDispatched = properties & NIMBLE_PROPERTY::NOTIFY ? characteristic->notify() : characteristic->indicate();
 			result.outcome = result.publicationDispatched ? Outcome::Dispatched : Outcome::Failed;
@@ -298,11 +313,9 @@ namespace FixtureGatt
 		inventoryBoot = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
 		if (!inventoryBoot) inventoryBoot = 1;
 		entries = {{
-			{notificationCharacteristic, "Original notification", ServiceUuid, NotificationCharacteristicUuid,
-				reinterpret_cast<const uint8_t*>(NotificationCharacteristicValue), sizeof(NotificationCharacteristicValue) - 1},
-			{indicationCharacteristic, "Original indication", ServiceUuid, IndicationCharacteristicUuid,
-				reinterpret_cast<const uint8_t*>(IndicationCharacteristicValue), sizeof(IndicationCharacteristicValue) - 1},
-			{fixtures[4], names[4], DescriptorServiceUuid, TemperatureUuid, scalarValue, sizeof(scalarValue)}
+			{notificationCharacteristic, "Original notification", ServiceUuid, NotificationCharacteristicUuid},
+			{indicationCharacteristic, "Original indication", ServiceUuid, IndicationCharacteristicUuid},
+			{fixtures[4], names[4], DescriptorServiceUuid, TemperatureUuid}
 		}};
 #endif
 
@@ -358,9 +371,9 @@ namespace FixtureGatt
 
 #if BLE_ENABLE_WEB_INTERFACE
 	WebResult GetValues() { return runHost(Work::Snapshot, {}, {}, 0); }
-	WebResult ChangeValue(ConnectionId id, const GattValue::Buffer& bytes, size_t length, bool restore)
+	WebResult ChangeValue(ConnectionId id, const GattValue::Buffer& bytes, size_t length)
 	{
-		return runHost(restore ? Work::Restore : Work::Publish, id, bytes, length);
+		return runHost(Work::Publish, id, bytes, length);
 	}
 #endif
 }

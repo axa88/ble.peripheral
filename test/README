@@ -109,16 +109,21 @@ folders:
 The web-status regression extracts the production `operationDataJson`,
 `operationRecordJson`, `statusIsComplete`, `hexValue`, `getStatus`, and `getGatt`
 bodies against installed cJSON. Its two executables are the current code and
-known-bad status-validator/GATT-allocation-check variants, both in one native
-legacy-advertising configuration; they are not separate C3 and WROVER builds.
-The harness supplies a three-target `FixtureGatt::GetValues()` snapshot stub,
-`makeStatus`, and HTTP-response stubs. It checks complete GATT snapshot fields
-and hex values, injects failure at each of the 94 cJSON allocations across
-snapshot construction and serialization, and proves the known-bad variant can
-return an incomplete HTTP 200. Explicit snapshot `Failed` maps to 500 while
-`Busy` and `NotReady` remain 409. It does not run production `GetValues()`, the
-full `makeStatus` snapshot producer, live HTTP routes/authentication, or device
-BLE behavior. Generated native artifacts are retained under
+known-bad status-validator/unchecked-target-allocation variants, both in one
+native legacy-advertising configuration; they are not separate C3 and WROVER
+builds. The harness supplies a three-target `FixtureGatt::GetValues()` snapshot
+stub, `makeStatus`, and HTTP-response stubs. It checks all 11 GATT snapshot
+fields, including the minimum connected-peer MTU and peer count, plus hex values.
+Status-envelope fixtures require a numeric firmware revision, a full 64-character
+hex source ID, and a nonempty environment string; malformed or wrongly typed
+identity values are rejected.
+The cJSON hook injects failure at every allocation observed in this fixture
+(91 in the current run; the count is discovered dynamically) and proves the
+known-bad variant can return an incomplete HTTP 200. Explicit snapshot `Failed`
+maps to 500 while `Busy` and `NotReady` remain 409. A source guard verifies the
+GATT route only accepts `publishValue`. It does not run production
+`GetValues()`, the full `makeStatus` snapshot producer, live HTTP
+routes/authentication, or device BLE behavior. Generated native artifacts are retained under
 `.pio/web-status/native`. When invoked by the validation matrix, the runner's
 stdout and stderr are captured in the unique run directory; a direct invocation
 does not write a separate log file. Run it directly with:
@@ -154,6 +159,8 @@ node .\test\web_ui_regression.cjs
 ```
 
 This checks polling synchronization, preserved edits, worker feedback, pairing
-controls, GATT byte parsing and publication bounds, scenario prefill, and error
-recovery in a Node DOM stub. It does not test browser layout, device HTTP/security
-behavior, central descriptor operations, or actual subscription delivery.
+controls, firmware identity fallback, GATT byte parsing and publication bounds,
+peer MTU and cap explanations, scenario prefill, no-peer and stale-snapshot
+messages, and removal of the Restore action in a Node DOM stub. It does not test
+browser layout, live device HTTP/security behavior, central descriptor
+operations, or actual subscription delivery.

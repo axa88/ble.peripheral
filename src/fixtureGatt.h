@@ -7,6 +7,7 @@
 #include "connectionId.h"
 #include "gattValue.h"
 #include <vector>
+#include <string>
 #endif
 
 namespace FixtureGatt
@@ -41,21 +42,22 @@ namespace FixtureGatt
 		uint16_t properties = 0;
 		size_t maxLength = 0;
 		size_t publicationLimit = 0;
+		size_t minimumPeerMtu = 0;
+		size_t connectedPeerCount = 0;
 		std::vector<uint8_t> current;
-		std::vector<uint8_t> baseline;
 	};
-	enum class Outcome { Ready, Applied, Dispatched, NotReady, NotFound, InvalidArgument, Busy, Failed };
+	enum class Outcome { Ready, Dispatched, NotReady, NotFound, InvalidArgument, Busy, Failed };
 	struct WebResult
 	{
 		Outcome outcome = Outcome::Failed;
-		const char* detail = "GATT operation failed.";
+		std::string detail = "GATT operation failed.";
 		bool storageVerified = false;
 		bool publicationAttempted = false;
 		bool publicationDispatched = false;
-		std::vector<ValueSnapshot> values;
+		std::vector<ValueSnapshot> values{};
 	};
 	// Called only from HTTP/worker tasks. Value access is marshalled to the BLE host.
 	WebResult GetValues();
-	WebResult ChangeValue(ConnectionId id, const GattValue::Buffer& bytes, size_t length, bool restore);
+	WebResult ChangeValue(ConnectionId id, const GattValue::Buffer& bytes, size_t length);
 #endif
 }

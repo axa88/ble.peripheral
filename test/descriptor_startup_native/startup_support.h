@@ -9,6 +9,7 @@
 
 #include "Arduino.h"
 #include "NimBLEDevice.h"
+#include "firmwareIdentity.h"
 
 class NimBLEAddress
 {
