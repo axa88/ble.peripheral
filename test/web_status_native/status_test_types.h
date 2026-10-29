@@ -87,8 +87,51 @@ namespace Advertising
 class BluetoothManager
 {
 public:
+	static constexpr size_t MaxGattObservationEntries = 12;
+	enum class GattPublicationStatusKind { NotificationTx, IndicationAcknowledged, Error };
 	struct ConnectedPeerSnapshot {};
+	struct GattSubscriptionObservation
+	{
+		ConnectionId connectionId{};
+		std::string peerAddress;
+		std::string characteristicUuid;
+		bool subscriptionObserved = false;
+		uint16_t cccdValue = 0;
+		uint32_t subscriptionObservedAtUptimeMs = 0;
+		bool publicationStatusObserved = false;
+		int publicationStatusCode = 0;
+		GattPublicationStatusKind publicationStatusKind = GattPublicationStatusKind::Error;
+		uint32_t publicationStatusObservedAtUptimeMs = 0;
+	};
+	struct GattSubscriptionDiagnosticsSnapshot
+	{
+		size_t currentConnectionCount = 0;
+		std::vector<GattSubscriptionObservation> observations;
+	};
+	static BluetoothManager& Instance();
+	GattSubscriptionDiagnosticsSnapshot GetGattSubscriptionDiagnosticsSnapshot();
 };
+
+inline const char* publicationStatusKindName(BluetoothManager::GattPublicationStatusKind kind)
+{
+	switch (kind)
+	{
+		case BluetoothManager::GattPublicationStatusKind::NotificationTx: return "NotificationTx";
+		case BluetoothManager::GattPublicationStatusKind::IndicationAcknowledged: return "IndicationAcknowledged";
+		case BluetoothManager::GattPublicationStatusKind::Error: default: return "Error";
+	}
+}
+
+inline std::string cccdHex(uint16_t value)
+{
+	constexpr char digits[] = "0123456789ABCDEF";
+	std::string text(4, '0');
+	text[0] = digits[(value >> 12) & 0x0F];
+	text[1] = digits[(value >> 8) & 0x0F];
+	text[2] = digits[(value >> 4) & 0x0F];
+	text[3] = digits[value & 0x0F];
+	return text;
+}
 
 enum class WorkerOperation
 {
@@ -189,6 +232,7 @@ namespace WebStatusTest
 	extern MakeStatusMode makeStatusMode;
 	extern GattSnapshotMode gattSnapshotMode;
 	extern DynamicGatt::Inventory gattInventory;
+	extern BluetoothManager::GattSubscriptionDiagnosticsSnapshot gattDiagnostics;
 	extern bool dynamicGattReady;
 	extern const WorkerRecord* currentOperation;
 	extern ResponseCapture response;

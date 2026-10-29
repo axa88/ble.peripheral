@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace NIMBLE_PROPERTY
@@ -41,9 +42,22 @@ public:
 	bool dispatchSucceeds = true;
 	unsigned notifications = 0;
 	unsigned indications = 0;
+	std::vector<uint16_t> cccd;
+	std::vector<size_t> receivedNotifications;
+	std::vector<size_t> receivedIndications;
 	uint16_t getProperties() const { return properties; }
-	bool notify() { ++notifications; return dispatchSucceeds; }
-	bool indicate() { ++indications; return dispatchSucceeds; }
+	bool notify() { ++notifications; dispatchByCccd(); return dispatchSucceeds; }
+	bool indicate() { ++indications; dispatchByCccd(); return dispatchSucceeds; }
+
+private:
+	void dispatchByCccd()
+	{
+		for (size_t peer = 0; peer < cccd.size(); ++peer)
+		{
+			if ((cccd[peer] & 0x0001) && (properties & NIMBLE_PROPERTY::NOTIFY)) receivedNotifications.push_back(peer);
+			else if ((cccd[peer] & 0x0002) && (properties & NIMBLE_PROPERTY::INDICATE)) receivedIndications.push_back(peer);
+		}
+	}
 };
 
 class NimBLEServer

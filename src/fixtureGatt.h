@@ -17,6 +17,7 @@ namespace FixtureGatt
 	inline constexpr char NotificationCharacteristicUuid[] = "12345678-1234-5678-1234-56789abcdef2";
 	inline constexpr char IndicationCharacteristicUuid[] = "12345678-1234-5678-1234-56789abcdef3";
 	inline constexpr char CustomDescriptorUuid[] = "12345678-1234-5678-1234-56789abcdef4";
+	inline constexpr char DualUpdateCharacteristicUuid[] = "12345678-1234-5678-1234-56789abcdef5";
 
 	inline constexpr char ExistingCharacteristicValue[] = "Ima Characteristic";
 	inline constexpr char NotificationCharacteristicValue[] = "Notify Characteristic";
@@ -27,6 +28,9 @@ namespace FixtureGatt
 	inline constexpr char IndicationPayload[] = "indicate-event";
 	inline constexpr char DescriptorServiceUuid[] = "12345678-1234-5678-1234-56789abcdf00";
 	inline constexpr char TemperatureUuid[] = "12345678-1234-5678-1234-56789abcdf05";
+	inline constexpr char WritableDescriptionUuid[] = "12345678-1234-5678-1234-56789abcdf08";
+	inline constexpr char UnsignedRangeUuid[] = "12345678-1234-5678-1234-56789abcdf09";
+	inline constexpr char UnresolvedRangeUuid[] = "12345678-1234-5678-1234-56789abcdf10";
 
 	NimBLECharacteristic* Create(NimBLEServer& server);
 	bool Finalize();

@@ -16,11 +16,17 @@ inline constexpr char IndicationCharacteristicUuid[] = "@@INDICATION_CHARACTERIS
 inline constexpr char CustomDescriptorUuid[] = "@@CUSTOM_DESCRIPTOR_UUID@@";
 inline constexpr char DescriptorServiceUuid[] = "@@DESCRIPTOR_SERVICE_UUID@@";
 inline constexpr char TemperatureUuid[] = "@@TEMPERATURE_UUID@@";
+inline constexpr char DualUpdateCharacteristicUuid[] = "@@DUAL_UPDATE_CHARACTERISTIC_UUID@@";
+inline constexpr char WritableDescriptionUuid[] = "@@WRITABLE_DESCRIPTION_UUID@@";
+inline constexpr char UnsignedRangeUuid[] = "@@UNSIGNED_RANGE_UUID@@";
+inline constexpr char UnresolvedRangeUuid[] = "@@UNRESOLVED_RANGE_UUID@@";
 }
 namespace NIMBLE_PROPERTY {
 constexpr uint16_t READ=0x02, WRITE=0x08, NOTIFY=0x10, INDICATE=0x20;
 }
 constexpr uint16_t BLE_ATT_F_READ=0x01;
+constexpr uint16_t BLE_ATT_F_WRITE=0x02;
+constexpr uint16_t BLE_GATT_CHR_F_AUX_WRITE=0x0100;
 constexpr int BLE_HS_ENOENT=2;
 
 class NimBLEUUID {
@@ -139,7 +145,7 @@ namespace {
 static NimBLEServer* activeServer=nullptr;
 NimBLEServer* server() { return activeServer; }
 void setServer(NimBLEServer* value) { activeServer=value; }
-constexpr std::array<uint16_t, 5> descriptorUuids{{0x2901, 0x2904, 0x2905, 0x2906, 0}};
+constexpr std::array<uint16_t, 6> descriptorUuids{{0x2900, 0x2901, 0x2904, 0x2905, 0x2906, 0}};
 @@PROTECTED_SERVICES@@
 bool readEquals(uint16_t handle, const uint8_t* bytes, size_t length) {
     auto it=NativeDb::values.find(handle);
@@ -171,12 +177,20 @@ public:
         NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::WRITE|NIMBLE_PROPERTY::NOTIFY,{3,4}};
     NimBLECharacteristic indicate{&fixture,FixtureGatt::IndicationCharacteristicUuid,22,
         NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::WRITE|NIMBLE_PROPERTY::INDICATE,{5,6}};
+    NimBLECharacteristic dual{&fixture,FixtureGatt::DualUpdateCharacteristicUuid,39,
+        NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::NOTIFY|NIMBLE_PROPERTY::INDICATE,{'D','u','a','l'}};
     NimBLECharacteristic temperature{&descriptorFixture,FixtureGatt::TemperatureUuid,26,
         NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::NOTIFY,{0x21,0x43}};
     NimBLECharacteristic range{&descriptorFixture,"12345678-1234-5678-1234-56789abcdf03",31,
         NIMBLE_PROPERTY::READ,{0x10,0xF0}};
     NimBLECharacteristic aggregate{&descriptorFixture,"12345678-1234-5678-1234-56789abcdf04",35,
         NIMBLE_PROPERTY::READ,{6,7,8}};
+    NimBLECharacteristic writableDescription{&descriptorFixture,FixtureGatt::WritableDescriptionUuid,45,
+        NIMBLE_PROPERTY::READ|BLE_GATT_CHR_F_AUX_WRITE,{}};
+    NimBLECharacteristic unsignedRange{&descriptorFixture,FixtureGatt::UnsignedRangeUuid,49,
+        NIMBLE_PROPERTY::READ,{0x0A}};
+    NimBLECharacteristic unresolvedRange{&descriptorFixture,FixtureGatt::UnresolvedRangeUuid,53,
+        NIMBLE_PROPERTY::READ,{0x0A,0x00}};
     NimBLEDescriptor custom{&notify,NimBLEUUID(FixtureGatt::CustomDescriptorUuid),20,
         BLE_ATT_F_READ|0x02,{0xC1,0xC2}};
     NimBLEDescriptor tempName{&temperature,NimBLEUUID(uint16_t{0x2901}),28,BLE_ATT_F_READ,{'T','e','m','p'}};
@@ -185,15 +199,25 @@ public:
     NimBLEDescriptor rangeValid{&range,NimBLEUUID(uint16_t{0x2906}),33,BLE_ATT_F_READ,{0,1,0,2}};
     NimBLEDescriptor aggregateName{&aggregate,NimBLEUUID(uint16_t{0x2901}),36,BLE_ATT_F_READ,{'A','g','g'}};
     NimBLEDescriptor aggregateDescriptor{&aggregate,NimBLEUUID(uint16_t{0x2905}),37,BLE_ATT_F_READ,{1,0,2,0}};
+    NimBLEDescriptor writableExtended{&writableDescription,NimBLEUUID(uint16_t{0x2900}),46,BLE_ATT_F_READ,{0x02,0x00}};
+    NimBLEDescriptor writableName{&writableDescription,NimBLEUUID(uint16_t{0x2901}),47,BLE_ATT_F_READ|BLE_ATT_F_WRITE,
+        {'W','r','i','t','a','b','l','e',' ','U','s','e','r',' ','D','e','s','c','r','i','p','t','i','o','n'}};
+    NimBLEDescriptor unsignedFormat{&unsignedRange,NimBLEUUID(uint16_t{0x2904}),50,BLE_ATT_F_READ,{0x04,0,0,0x27,1,0,0}};
+    NimBLEDescriptor unsignedValid{&unsignedRange,NimBLEUUID(uint16_t{0x2906}),51,BLE_ATT_F_READ,{0x02,0x2A}};
+    NimBLEDescriptor unresolvedValid{&unresolvedRange,NimBLEUUID(uint16_t{0x2906}),54,BLE_ATT_F_READ,{0x02,0,0x2A,0}};
 
     FixtureModel() {
         nativeServer.addService(&fixture); nativeServer.addService(&descriptorFixture);
-        fixture.addCharacteristic(&existing); fixture.addCharacteristic(&notify); fixture.addCharacteristic(&indicate);
+        fixture.addCharacteristic(&existing); fixture.addCharacteristic(&notify); fixture.addCharacteristic(&indicate); fixture.addCharacteristic(&dual);
         descriptorFixture.addCharacteristic(&temperature); descriptorFixture.addCharacteristic(&range); descriptorFixture.addCharacteristic(&aggregate);
+        descriptorFixture.addCharacteristic(&writableDescription); descriptorFixture.addCharacteristic(&unsignedRange); descriptorFixture.addCharacteristic(&unresolvedRange);
         notify.addDescriptor(&custom);
         temperature.addDescriptor(&tempName); temperature.addDescriptor(&tempFormat);
         range.addDescriptor(&rangeName); range.addDescriptor(&rangeValid);
         aggregate.addDescriptor(&aggregateName); aggregate.addDescriptor(&aggregateDescriptor);
+        writableDescription.addDescriptor(&writableExtended); writableDescription.addDescriptor(&writableName);
+        unsignedRange.addDescriptor(&unsignedFormat); unsignedRange.addDescriptor(&unsignedValid);
+        unresolvedRange.addDescriptor(&unresolvedValid);
         DynamicGatt::setServer(&nativeServer);
         rebuildNative();
     }
@@ -213,13 +237,20 @@ public:
         addCharacteristic(fixture,existing,15,16);
         addCharacteristic(fixture,notify,17,18,19);
         addCharacteristic(fixture,indicate,21,22,23);
+        addCharacteristic(fixture,dual,38,39,40);
         addCharacteristic(descriptorFixture,temperature,25,26,27);
         addCharacteristic(descriptorFixture,range,30,31);
         addCharacteristic(descriptorFixture,aggregate,34,35);
+        addCharacteristic(descriptorFixture,writableDescription,44,45);
+        addCharacteristic(descriptorFixture,unsignedRange,48,49);
+        addCharacteristic(descriptorFixture,unresolvedRange,52,53);
         addDescriptor(fixture,notify,custom);
         addDescriptor(descriptorFixture,temperature,tempName); addDescriptor(descriptorFixture,temperature,tempFormat);
         addDescriptor(descriptorFixture,range,rangeName); addDescriptor(descriptorFixture,range,rangeValid);
         addDescriptor(descriptorFixture,aggregate,aggregateName); addDescriptor(descriptorFixture,aggregate,aggregateDescriptor);
+        addDescriptor(descriptorFixture,writableDescription,writableExtended); addDescriptor(descriptorFixture,writableDescription,writableName);
+        addDescriptor(descriptorFixture,unsignedRange,unsignedFormat); addDescriptor(descriptorFixture,unsignedRange,unsignedValid);
+        addDescriptor(descriptorFixture,unresolvedRange,unresolvedValid);
         NativeDb::values[3]={'D','e','v','i','c','e'};
         NativeDb::values[5]={0,0}; NativeDb::values[8]={0,0,0,0};
         NativeDb::values[11]={0}; NativeDb::values[13]={0};
@@ -253,11 +284,28 @@ static void testRoundTripAndRuntimeValues() {
     FixtureModel model;
     model.temperature.setValue({0xB1,0xB2,0xB3});
     model.tempFormat.setValue({0x55,0x66,0x77});
-    model.rebuildNative();
+    const std::vector<uint8_t> writtenDescription{0x43,0x61,0x66,0xC3,0xA9};
+    model.writableName.setValue(writtenDescription);
+    NativeDb::values[model.writableName.getHandle()]=writtenDescription;
     auto identity=capture(model);
-    check(identity.cccds.size()==3,"all static notify/indicate CCCDs are captured");
+    check(identity.cccds.size()==4,"all original, dual-mode, and temperature CCCDs are captured");
+    const auto capturedMutableDescription=std::find_if(identity.descriptors.begin(),identity.descriptors.end(),[&](const auto& item){
+        return item.descriptor==&model.writableName;
+    });
+    const auto capturedExtendedProperties=std::find_if(identity.descriptors.begin(),identity.descriptors.end(),[&](const auto& item){
+        return item.descriptor==&model.writableExtended;
+    });
+    check(identity.descriptors.size()==12 && capturedMutableDescription!=identity.descriptors.end() &&
+          capturedMutableDescription->characteristic==&model.writableDescription &&
+          capturedMutableDescription->uuid==NimBLEUUID(uint16_t{0x2901}) &&
+          capturedMutableDescription->handle==model.writableName.getHandle() &&
+          capturedMutableDescription->permissions==(BLE_ATT_F_READ|BLE_ATT_F_WRITE) &&
+          capturedMutableDescription->value==writtenDescription &&
+          capturedExtendedProperties!=identity.descriptors.end() && capturedExtendedProperties->value==std::vector<uint8_t>({0x02,0x00}),
+          "FixtureIdentity captures mutable 0x2901 and 0x2900 object, parent, handle, permissions, and current bytes");
     model.rebuildNative();
-    check(identity.verify(),"unchanged rebuilt native topology and live values verify");
+    check(identity.verify() && NativeDb::values[model.writableName.getHandle()]==writtenDescription,
+          "mutable description bytes differing from startup seed survive native rebuild and ATT readback");
 }
 static void testGapIdentities() {
     FixtureModel missing; NativeDb::services.erase(NimBLEUUID(uint16_t{0x1800}).key());
@@ -337,6 +385,17 @@ static void testFixtureAttributes() {
     const auto formatHandle=NativeDb::descriptors[descriptorKey];
     NativeDb::values[formatHandle][0]^=0x01;
     check(!descriptorValueId.verify(),"verify detects changed native descriptor bytes");
+
+    FixtureModel mutableDescription; auto mutableDescriptionId=capture(mutableDescription);
+    const auto mutableDescriptionKey=NativeDb::DescKey{NimBLEUUID(FixtureGatt::DescriptorServiceUuid).key(),
+        NimBLEUUID(FixtureGatt::WritableDescriptionUuid).key(),NimBLEUUID(uint16_t{0x2901}).key()};
+    const auto mutableDescriptionHandle=NativeDb::descriptors[mutableDescriptionKey];
+    NativeDb::values[mutableDescriptionHandle][0]^=0x01;
+    check(!mutableDescriptionId.verify(),"verify detects changed native ATT readback for the mutable 0x2901 descriptor");
+
+    FixtureModel mutableWrapper; auto mutableWrapperId=capture(mutableWrapper);
+    mutableWrapper.writableName.setValue({'C','a','t'});
+    check(!mutableWrapperId.verify(),"verify detects a changed mutable descriptor object after snapshot");
 
     FixtureModel characteristicValue; auto characteristicValueId=capture(characteristicValue);
     const auto tempHandle=NativeDb::characteristics[chrKey].value;

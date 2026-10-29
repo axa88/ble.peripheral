@@ -42,6 +42,7 @@
 <section class="wide"><h2>GATT Controls</h2>
 <label>Characteristic<select id="gattTarget"></select></label><pre id="gattIdentity"></pre>
 <p>Current value (hex)</p><pre id="gattCurrent">Unavailable</pre><p id="gattLimit" class="muted"></p>
+<h3>Subscription diagnostics</h3><pre id="gattSubscriptionDiagnostics" class="muted" role="status" aria-live="polite">Waiting for current-connection subscription callbacks.</pre>
 <label>Value to publish (hex; empty allowed)<input id="gattHex" type="text" maxlength="1024" autocomplete="off" spellcheck="false" style="width:100%"></label>
 <p id="gattDraftStatus" role="status" aria-live="polite">Draft unavailable. Select a current target to enable Send.</p>
 <button id="gattPublish" data-worker-action disabled>Send value</button>
@@ -58,7 +59,7 @@
 <label>Temporary service to remove<select id="gattRemoveTarget"></select></label>
 <div class="row"><button id="gattRemoveService" data-worker-action disabled>Remove service</button><button id="gattSendServiceChanged" data-worker-action disabled>Send Service Changed</button></div>
 <p class="muted">Temporary services are volatile and do not change advertising. Disconnect every peer before adding or removing a service. Service Changed can be dispatched while connected; the status reports server dispatch, not client receipt or acknowledgement.</p>
-<p class="muted">Send stores the value and requests delivery to subscribers. Verify receipt on the BLE client; a reported send does not prove receipt or indication acknowledgement. Every connected peer, including unsubscribed peers, bounds the publication limit. With no connected peers, Send changes the stored value and nobody can receive an update. ATT carries up to three fewer value bytes than the negotiated MTU. Selections and scenario prefill do not change the device.</p>
+<p class="muted">Send stores the value and asks NimBLE to queue a characteristic update. A successful result and the publicationDispatched flag mean NimBLE accepted or queued the request; they do not prove peer dispatch or client-application receipt. For a characteristic with both Notify and Indicate, each peer's CCCD selection determines its effective update kind; the button method does not force it. Asynchronous TX and indication acknowledgement statuses do not prove application handling. Every connected peer, including unsubscribed peers, bounds the publication limit. With no connected peers, Send changes the stored value and nobody can receive an update. ATT carries up to three fewer value bytes than the negotiated MTU. Selections and scenario prefill do not change the device.</p>
 </section>
 <section class="wide"><details class="section-disclosure"><summary>GATT Test Scenarios</summary>
 <p class="muted">Use a BLE central with fresh discovery. These are instructions and expected data, not observed test results. Avoid concurrent writes to the same target. A fresh boot provides the canonical initial values.</p>
@@ -92,7 +93,11 @@ const gattScenarios=[
  {name:'Manual indication while connected',kind:'manual',text:()=> 'Keep a BLE central connected and invoke Send Service Changed. Pass: the device reports Dispatched. Separately record whether the client or operating system observed the event and explicitly rediscovered services; dispatch does not prove radio delivery, receipt, or acknowledgement. This operation does not change the database.'},
  {name:'Add then reconnect and discover',kind:'add',serviceUuid:'12345678-1234-5678-1234-56789abce100',characteristicUuid:'12345678-1234-5678-1234-56789abce101',valueHex:'01 02',text:()=> 'Use Fill GATT Controls, then click Add service manually. Disconnect, reconnect, explicitly rediscover, and verify the new service UUID, characteristic UUID, and initial value. Record the device operation result separately from central discovery.'},
  {name:'Remove then reconnect and discover',kind:'remove',text:()=> 'Use Fill GATT Controls to select a current temporary service, then click Remove service manually. Disconnect, reconnect, explicitly rediscover, and verify that service is absent. Protected fixture services cannot be removed.'},
- {name:'Bonded cache behavior',kind:'add',serviceUuid:'12345678-1234-5678-1234-56789abce102',characteristicUuid:'12345678-1234-5678-1234-56789abce103',valueHex:'A1',text:()=> 'Use an already bonded central. With it disconnected, add a temporary service using the filled controls or remove a temporary service. Reconnect and compare the cached topology with explicit service rediscovery. Confirm existing fixture descriptors and subscriptions remain valid. Do not delete bonds; record any Service Changed event separately from the firmware operation result.'}
+ {name:'Bonded cache behavior',kind:'add',serviceUuid:'12345678-1234-5678-1234-56789abce102',characteristicUuid:'12345678-1234-5678-1234-56789abce103',valueHex:'A1',text:()=> 'Use an already bonded central. With it disconnected, add a temporary service using the filled controls or remove a temporary service. Reconnect and compare the cached topology with explicit service rediscovery. Confirm existing fixture descriptors and subscriptions remain valid. Do not delete bonds; record any Service Changed event separately from the firmware operation result.'},
+ {name:'Writable and ineligible User Descriptions',kind:'central',text:()=> 'Central only: discover '+fixtureUuid('df08')+'. Read its sole 0x2900 and confirm exact bytes 02 00, then read its 0x2901. Write Café as UTF-8 bytes 43 61 66 C3 A9 and read back the exact bytes; also verify a shorter and longer single-request write. Compare the original seven 0x2901 descriptors: each remains read-only and has no 0x2900. Original '+fixtureUuid('def1')+' has no 0x2901. Do not use the peripheral value controls for descriptor writes.'},
+ {name:'Unsigned Valid Range',kind:'central',text:()=> 'Central only: read '+fixtureUuid('df09')+' value 0A, its 0x2904 bytes 04 00 00 27 01 00 00, and its 0x2906 bytes 02 2A. Pass: unsigned uint8 value 10 with inclusive unitless bounds 2 through 42. This fixture reports metadata; it does not enforce the range.'},
+ {name:'Unresolved raw-only Valid Range',kind:'central',text:()=> 'Central only: read '+fixtureUuid('df10')+' value 0A 00 and its 0x2906 bytes 02 00 2A 00. Confirm there is no 0x2904 or 0x2905. Preserve the raw value and report type, units, and bounds as unresolved; do not infer a numeric range from neighboring fixtures.'},
+ {name:'Dual Notify and Indicate subscription diagnostics',suffix:'def5',hex:'01 02 03',text:()=> 'Use the central CCCD on '+fixtureUuid('def5')+' to select Off (0000), Notify (0001), Indicate (0002), and both (0003) where supported. Exercise Off → Notify → Indicate → Off, Off → Indicate, Indicate → Notify, and repeated selections. Publish while Off and record that the central receives no update. Review Last observed subscription and Connection freshness above: values are the latest observed onSubscribe events for current connections; no event means unknown, not Off, and disconnect clears the observation. The subscription selected by each peer determines its effective update kind; the Web publish method name does not force it. Fill controls and publish manually, then record actual central receipt and any asynchronous stack status separately. Selections and prefill perform no GATT action.'}
 ];
 const pairNodes=new Map();
 const submittedFields=new Map();
@@ -357,7 +362,7 @@ function renderGattSelection(){
  $('gattIdentity').textContent=item?'Service: '+item.serviceUuid+'\r\nCharacteristic: '+item.characteristicUuid+'\r\nInstance: '+item.targetId+'\r\nProperties: READ'+(item.characteristicUuid===fixtureUuid('df05')?'':' | WRITE')+(item.notify?' | NOTIFY':' | INDICATE'):'';
  $('gattCurrent').textContent=item?(spacedHex(item.currentHex)||'(empty)'):'Unavailable';
  $('gattLimit').textContent=item?gattPublicationContext(item):'';
- $('gattPublish').textContent=item&&item.indicate?'Send indication':'Send notification';
+ $('gattPublish').textContent=!item?'Send value':item.notify&&item.indicate?'Send update':item.indicate?'Send indication':'Send notification';
  if(item&&gattAvailable)syncField('gattHex',spacedHex(item.currentHex),changed);
  updateGattDraft(item);
 }
@@ -410,17 +415,58 @@ function renderGattInventory(){
   else table.replaceChildren();
  }
 }
+function isSubscriptionDiagnostics(data){
+ if(!data||typeof data!=='object'||Array.isArray(data)||!Number.isInteger(data.currentConnectionCount)||data.currentConnectionCount<0||
+  !Number.isInteger(data.maximumEntries)||data.maximumEntries<0||typeof data.subscriptionSemantics!=='string'||typeof data.publicationStatusSemantics!=='string'||
+  !Array.isArray(data.lastObservedSubscriptions)||!Array.isArray(data.lastPublicationStatuses)||
+  data.lastObservedSubscriptions.length>data.maximumEntries||data.lastPublicationStatuses.length>data.maximumEntries)return false;
+ for(const item of data.lastObservedSubscriptions){
+  if(!item||typeof item!=='object'||typeof item.connectionId!=='string'||typeof item.peerAddress!=='string'||typeof item.characteristicUuid!=='string'||
+   !/^(0000|0001|0002|0003)$/.test(item.cccdValue)||!Number.isInteger(item.observedAtUptimeMs)||item.connectionFreshness!=='current')return false;
+ }
+ for(const item of data.lastPublicationStatuses){
+  if(!item||typeof item!=='object'||typeof item.connectionId!=='string'||typeof item.peerAddress!=='string'||typeof item.characteristicUuid!=='string'||
+   !Number.isInteger(item.statusCode)||!['NotificationTx','IndicationAcknowledged','Error'].includes(item.statusKind)||
+   !Number.isInteger(item.observedAtUptimeMs)||item.connectionFreshness!=='current')return false;
+ }
+ return true;
+}
+function renderGattSubscriptionDiagnostics(data){
+ const output=$('gattSubscriptionDiagnostics');
+ if(!isSubscriptionDiagnostics(data)){
+  output.textContent='Subscription diagnostics unavailable. No CCCD state is inferred from missing data.';return;
+ }
+ const lines=['Connection freshness: '+data.currentConnectionCount+' current peer(s); observations are cleared when a connection ends.'];
+ if(data.lastObservedSubscriptions.length){
+  for(const item of data.lastObservedSubscriptions){
+   lines.push('Last observed subscription: '+item.characteristicUuid+' for '+item.peerAddress+' (connection '+item.connectionId+'): CCCD '+item.cccdValue+' at device uptime '+item.observedAtUptimeMs+' ms. Connection freshness: '+item.connectionFreshness+'.');
+  }
+ }else{
+  lines.push('Last observed subscription: no event was observed for the current peer connection(s). Missing observation means unknown; it does not mean Off.');
+ }
+ if(data.lastPublicationStatuses.length){
+  for(const item of data.lastPublicationStatuses){
+   const label=item.statusKind==='NotificationTx'?'Notification TX status':item.statusKind==='IndicationAcknowledged'?'Indication acknowledgement':'NimBLE publication error';
+   lines.push('Last asynchronous publication status: '+label+' (code '+item.statusCode+') for '+item.characteristicUuid+' and '+item.peerAddress+' at device uptime '+item.observedAtUptimeMs+' ms. Connection freshness: '+item.connectionFreshness+'. BLE stack status does not prove client-application receipt.');
+  }
+ }else{
+  lines.push('Last asynchronous publication status: no status callback was observed for the current peer connection(s).');
+ }
+ lines.push('Bound: at most '+data.maximumEntries+' latest peer/characteristic record(s). '+data.subscriptionSemantics+' '+data.publicationStatusSemantics);
+ output.textContent=lines.join('\n');
+}
 function isGattSnapshotEnvelope(data){
  if(!data||typeof data!=='object'||Array.isArray(data))return false;
  if(typeof data.state!=='string'||typeof data.valuesAvailable!=='boolean'||typeof data.servicesAvailable!=='boolean')return false;
  const valuesArray=Array.isArray(data.values),servicesArray=Array.isArray(data.services);
  return (valuesArray||data.values===null)&&(servicesArray||data.services===null)&&
-  data.valuesAvailable===valuesArray&&data.servicesAvailable===servicesArray;
+  data.valuesAvailable===valuesArray&&data.servicesAvailable===servicesArray&&isSubscriptionDiagnostics(data.subscriptionDiagnostics);
 }
 function renderGatt(data,requestReason=''){
  if(!data){
   gattAvailable=false;gattServicesAvailable=false;gattReason=requestReason||'GATT snapshot request failed.';
  }else{
+  renderGattSubscriptionDiagnostics(data.subscriptionDiagnostics);
   if(typeof data.state==='string')gattState=data.state;else if(!gattState)gattState='Ready';
   if(typeof data.reason==='string')gattReason=data.reason;else gattReason=requestReason||'';
   const valuesAvailable=typeof data.valuesAvailable==='boolean'?data.valuesAvailable:Array.isArray(data.values);
@@ -436,6 +482,7 @@ function renderGatt(data,requestReason=''){
   if(gattState==='Applying'||gattState==='RecoveryRequired'||gattRecoveryRequired())gattReadyObserved=false;
   else if(gattState==='Ready'&&(gattAvailable||gattServicesAvailable))gattReadyObserved=true;
  }
+ if(!data)renderGattSubscriptionDiagnostics(null);
  if(data&&Number.isInteger(data.serviceLimit)&&data.serviceLimit>=0)gattServiceLimit=data.serviceLimit;
  renderGattSelection();renderGattStatus();renderGattInventory();renderGattScenario();if(status)setWorkerAvailability(status);
 }

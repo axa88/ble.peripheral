@@ -47,6 +47,14 @@ def cjson_paths() -> tuple[Path, Path]:
 
 def imported_bodies() -> dict[str, str]:
 	web = (ROOT / "src" / "webInterface.cpp").read_text(encoding="utf-8")
+	publication_detail = ("Value stored; NimBLE accepted/queued the characteristic update request. "
+		"Peer dispatch and client-application receipt are not proven.")
+	if publication_detail not in web:
+		raise RuntimeError("publishValue status copy must define Dispatched as NimBLE accepting/queuing the request without claiming peer dispatch or client receipt")
+	if "Operation accepted by the worker." not in web:
+		raise RuntimeError("queued operation status must describe worker acceptance, not completion")
+	if "Value stored; publication dispatched." in web:
+		raise RuntimeError("stale publishValue status copy still claims per-peer dispatch")
 	if "restoreValue" in web or "WorkerOperation::RestoreValue" in web:
 		raise RuntimeError("removed restoreValue route/worker handling remains in production webInterface.cpp")
 	if 'if (op != "publishValue") return unsupported(detail, "Unknown GATT operation.");' not in web:

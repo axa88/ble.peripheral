@@ -11,7 +11,8 @@ import sys
 UUID_NAMES = (
     "ServiceUuid", "ExistingCharacteristicUuid", "NotificationCharacteristicUuid",
     "IndicationCharacteristicUuid", "CustomDescriptorUuid", "DescriptorServiceUuid",
-    "TemperatureUuid",
+    "TemperatureUuid", "DualUpdateCharacteristicUuid", "WritableDescriptionUuid",
+    "UnsignedRangeUuid", "UnresolvedRangeUuid",
 )
 UUID_MARKERS = {
     "ServiceUuid": "SERVICE_UUID",
@@ -21,6 +22,10 @@ UUID_MARKERS = {
     "CustomDescriptorUuid": "CUSTOM_DESCRIPTOR_UUID",
     "DescriptorServiceUuid": "DESCRIPTOR_SERVICE_UUID",
     "TemperatureUuid": "TEMPERATURE_UUID",
+    "DualUpdateCharacteristicUuid": "DUAL_UPDATE_CHARACTERISTIC_UUID",
+    "WritableDescriptionUuid": "WRITABLE_DESCRIPTION_UUID",
+    "UnsignedRangeUuid": "UNSIGNED_RANGE_UUID",
+    "UnresolvedRangeUuid": "UNRESOLVED_RANGE_UUID",
 }
 
 def fail(message: str) -> None:
@@ -78,6 +83,9 @@ def main() -> int:
     for required in ("struct Preserved", "struct DescriptorIdentity", "struct FixtureIdentity",
                      "serverFeaturesHandle", "clientFeaturesHandle", "cccds"):
         if required not in identity_types: fail(f"production FixtureIdentity contract missing: {required}")
+    descriptor_list = re.search(r"constexpr\s+std::array<uint16_t,\s*\d+>\s+descriptorUuids\s*\{\{([^}]*)\}\}", source)
+    if not descriptor_list or not re.search(r"\b0x2900\b", descriptor_list.group(1)):
+        fail("production FixtureIdentity must capture Extended Properties descriptor 0x2900")
 
     template = (root / "test/dynamic_topology_native/topology_harness.cpp.in").read_text(encoding="utf-8")
     replacements = {
@@ -91,8 +99,8 @@ def main() -> int:
         generated = generated.replace(marker, value)
     if "@@" in generated: fail("unresolved generated-source marker")
 
-    original = root.parent / "ble.peripheral"
-    compiler = original / ".pio/native-tools/winlibs-16.2.0-ucrt-r2/mingw64/bin/g++.exe"
+    cache_root = Path(os.environ.get("BLE_PERIPHERAL_NATIVE_CACHE_ROOT", root.parent / "ble.peripheral"))
+    compiler = cache_root / ".pio/native-tools/winlibs-16.2.0-ucrt-r2/mingw64/bin/g++.exe"
     if not compiler.is_file(): fail(f"WinLibs compiler missing: {compiler}")
     outroot = root / ".pio/dynamic-topology-native"
     outroot.mkdir(parents=True, exist_ok=True)

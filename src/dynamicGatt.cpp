@@ -36,7 +36,7 @@ namespace
     std::array<Managed, ServiceLimit> managed{};
     uint64_t boot = 0;
     uint32_t sequence = 0;
-    constexpr std::array<uint16_t, 5> descriptorUuids{{0x2901, 0x2904, 0x2905, 0x2906, 0}};
+    constexpr std::array<uint16_t, 6> descriptorUuids{{0x2900, 0x2901, 0x2904, 0x2905, 0x2906, 0}};
     NimBLEServer* server() { return BluetoothManager::Instance().Server(); }
     std::array<NimBLEService*, 2> protectedServices()
     {
@@ -74,10 +74,12 @@ namespace
         if (!svc || !chr || chr->getService() != svc || !chr->getHandle() ||
             ble_gatts_find_chr(svc->getUUID().getBase(), chr->getUUID().getBase(), &declaration, &value) || value != chr->getHandle()) return false;
         os_mbuf* data = nullptr;
+        const uint16_t flags = chr->getProperties();
+        const uint8_t declarationProperties = static_cast<uint8_t>((flags & 0x7F) | ((flags & (BLE_GATT_CHR_F_RELIABLE_WRITE | BLE_GATT_CHR_F_AUX_WRITE)) ? 0x80 : 0));
         const int rc = ble_att_svr_read_local(declaration, &data);
         uint8_t fields[3]{};
         const bool ok = !rc && data && OS_MBUF_PKTLEN(data) >= 5 && os_mbuf_copydata(data, 0, 3, fields) == 0 &&
-            fields[0] == (chr->getProperties() & 0xFF) && (uint16_t(fields[1]) | uint16_t(fields[2]) << 8) == value;
+            fields[0] == declarationProperties && (uint16_t(fields[1]) | uint16_t(fields[2]) << 8) == value;
         if (data) os_mbuf_free_chain(data);
         if (!ok) return false;
         const auto current = chr->getValue();
@@ -90,7 +92,7 @@ namespace
         uint16_t handle, properties;
         std::vector<uint8_t> value;
     };
-    struct DescriptorIdentity { NimBLEDescriptor* descriptor; uint16_t handle, permissions; std::vector<uint8_t> value; };
+    struct DescriptorIdentity { NimBLEDescriptor* descriptor; NimBLECharacteristic* characteristic; NimBLEService* service; NimBLEUUID uuid; uint16_t handle, permissions; std::vector<uint8_t> value; };
     struct FixtureIdentity
     {
         std::vector<Preserved> values;
@@ -124,7 +126,7 @@ namespace
                     {
                         const NimBLEUUID id(uuid ? uuid : uint16_t{0xFFFF});
                         auto* d = uuid ? chr->getDescriptorByUUID(id) : chr->getDescriptorByUUID(NimBLEUUID(FixtureGatt::CustomDescriptorUuid));
-                        if (d) { const auto v = d->getValue(); descriptors.push_back({d, d->getHandle(), d->getProperties(), {v.begin(), v.end()}}); }
+                        if (d) { const auto v = d->getValue(); descriptors.push_back({d, chr, svc, d->getUUID(), d->getHandle(), d->getProperties(), {v.begin(), v.end()}}); }
                     }
                 }
             }
@@ -163,7 +165,7 @@ namespace
                 auto* c = d->getCharacteristic();
                 uint16_t handle = 0;
                 const auto v = d->getValue();
-                if (!c || !c->getService() || !d->getHandle() || d->getHandle() != p.handle || d->getProperties() != p.permissions || v.size() != p.value.size() || !std::equal(v.begin(), v.end(), p.value.begin()) ||
+                if (!c || c != p.characteristic || !p.characteristic || p.characteristic->getDescriptorByUUID(p.uuid) != d || c->getService() != p.service || !(d->getUUID() == p.uuid) || !d->getHandle() || d->getHandle() != p.handle || d->getProperties() != p.permissions || v.size() != p.value.size() || !std::equal(v.begin(), v.end(), p.value.begin()) ||
                     ble_gatts_find_dsc(c->getService()->getUUID().getBase(), c->getUUID().getBase(), d->getUUID().getBase(), &handle) ||
                     handle != d->getHandle() || !readEquals(handle, v.data(), v.size())) return false;
             }

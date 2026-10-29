@@ -6,8 +6,10 @@
 #include <vector>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <mutex>
 #include "bleConfig.h"
 #include "connectionId.h"
@@ -53,6 +55,29 @@ public:
 		int remaining;
 	};
 
+#if BLE_ENABLE_WEB_INTERFACE
+	static constexpr size_t MaxGattObservationEntries = CONFIG_BT_NIMBLE_MAX_CONNECTIONS * 3;
+	enum class GattPublicationStatusKind { NotificationTx, IndicationAcknowledged, Error };
+	struct GattSubscriptionObservation
+	{
+		ConnectionId connectionId{};
+		std::string peerAddress;
+		std::string characteristicUuid;
+		bool subscriptionObserved = false;
+		uint16_t cccdValue = 0;
+		uint32_t subscriptionObservedAtUptimeMs = 0;
+		bool publicationStatusObserved = false;
+		int publicationStatusCode = 0;
+		GattPublicationStatusKind publicationStatusKind = GattPublicationStatusKind::Error;
+		uint32_t publicationStatusObservedAtUptimeMs = 0;
+	};
+	struct GattSubscriptionDiagnosticsSnapshot
+	{
+		size_t currentConnectionCount = 0;
+		std::vector<GattSubscriptionObservation> observations;
+	};
+#endif
+
 	// Public API
 	static BluetoothManager& Instance() noexcept;
 
@@ -80,6 +105,11 @@ public:
 	std::optional<int8_t> GetPeerRssi(ConnectionId connection) noexcept;
 	std::vector<ConnectedPeerSnapshot> GetConnectedPeerSnapshots();
 	bool TryGetConnectedPeerSnapshots(std::vector<ConnectedPeerSnapshot>& snapshots);
+#if BLE_ENABLE_WEB_INTERFACE
+	void RecordGattSubscription(const NimBLEConnInfo& info, std::string_view characteristicUuid, uint16_t cccdValue);
+	void RecordGattPublicationStatus(const NimBLEConnInfo& info, std::string_view characteristicUuid, int status);
+	GattSubscriptionDiagnosticsSnapshot GetGattSubscriptionDiagnosticsSnapshot();
+#endif
 	bool ConnectionExists(ConnectionId connection);
 	static bool ValidConnectionParameters(uint32_t minIntervalMs, uint32_t maxIntervalMs, uint16_t latency, uint32_t supervisionTimeoutMs);
 	Outcome SetPreferredMtu(uint16_t mtu);
@@ -120,6 +150,22 @@ private:
 	};
 	std::recursive_mutex connectionMutex_;
 	std::array<LiveConnection, CONFIG_BT_NIMBLE_MAX_CONNECTIONS> connections_{};
+	#if BLE_ENABLE_WEB_INTERFACE
+	struct GattObservationSlot
+	{
+		ConnectionId connectionId{};
+		std::array<char, 37> characteristicUuid{};
+		bool used = false;
+		bool subscriptionObserved = false;
+		uint16_t cccdValue = 0;
+		uint32_t subscriptionObservedAtUptimeMs = 0;
+		bool publicationStatusObserved = false;
+		int publicationStatusCode = 0;
+		uint32_t publicationStatusObservedAtUptimeMs = 0;
+	};
+	std::array<GattObservationSlot, MaxGattObservationEntries> gattObservations_{};
+	GattObservationSlot* FindGattObservationSlotLocked(ConnectionId connection, std::string_view characteristicUuid);
+	#endif
 	uint64_t bootId_ = 0;
 	uint32_t connectionSequence_ = 0;
 	void Connected(const NimBLEConnInfo& info);

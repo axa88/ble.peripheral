@@ -1146,7 +1146,9 @@ ExecutionResult execute(const WorkerCommand& command)
 		{
 			const auto result = FixtureGatt::ChangeValue(command.connection, command.value, command.valueLength);
 			execution.result = result.outcome == FixtureGatt::Outcome::Dispatched ? Result::Dispatched : Result::Failed;
-			execution.detail = result.detail;
+			execution.detail = result.outcome == FixtureGatt::Outcome::Dispatched ?
+				"Value stored; NimBLE accepted/queued the characteristic update request. Peer dispatch and client-application receipt are not proven." :
+				result.detail;
 			execution.data.hasGatt = true;
 			execution.data.storageVerified = result.storageVerified;
 			execution.data.publicationAttempted = result.publicationAttempted;
@@ -1835,6 +1837,27 @@ std::string hexValue(const std::vector<uint8_t>& value)
 	return text;
 }
 
+const char* publicationStatusKindName(BluetoothManager::GattPublicationStatusKind kind)
+{
+	switch (kind)
+	{
+		case BluetoothManager::GattPublicationStatusKind::NotificationTx: return "NotificationTx";
+		case BluetoothManager::GattPublicationStatusKind::IndicationAcknowledged: return "IndicationAcknowledged";
+		case BluetoothManager::GattPublicationStatusKind::Error: default: return "Error";
+	}
+}
+
+std::string cccdHex(uint16_t value)
+{
+	constexpr char digits[] = "0123456789ABCDEF";
+	std::string text(4, '0');
+	text[0] = digits[(value >> 12) & 0x0F];
+	text[1] = digits[(value >> 8) & 0x0F];
+	text[2] = digits[(value >> 4) & 0x0F];
+	text[3] = digits[value & 0x0F];
+	return text;
+}
+
 esp_err_t getGatt(httpd_req_t* request)
 {
 	if (!guardRequest(request, false)) return ESP_OK;
@@ -1950,6 +1973,124 @@ esp_err_t getGatt(httpd_req_t* request)
 	}
 	else if (!cJSON_AddNullToObject(json, "services"))
 	{
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+
+	const auto diagnostics = BluetoothManager::Instance().GetGattSubscriptionDiagnosticsSnapshot();
+	cJSON* subscriptionDiagnostics = cJSON_CreateObject();
+	cJSON* lastObservedSubscriptions = cJSON_CreateArray();
+	cJSON* lastPublicationStatuses = cJSON_CreateArray();
+	if (!subscriptionDiagnostics || !lastObservedSubscriptions || !lastPublicationStatuses)
+	{
+		if (subscriptionDiagnostics) cJSON_Delete(subscriptionDiagnostics);
+		if (lastObservedSubscriptions) cJSON_Delete(lastObservedSubscriptions);
+		if (lastPublicationStatuses) cJSON_Delete(lastPublicationStatuses);
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+	for (const auto& entry : diagnostics.observations)
+	{
+		const auto connectionId = WebValidation::formatId(entry.connectionId);
+		if (entry.subscriptionObserved)
+		{
+			cJSON* item = cJSON_CreateObject();
+			const auto value = cccdHex(entry.cccdValue);
+			if (!item || !cJSON_AddStringToObject(item, "connectionId", connectionId.c_str()) ||
+				!cJSON_AddStringToObject(item, "peerAddress", entry.peerAddress.c_str()) ||
+				!cJSON_AddStringToObject(item, "characteristicUuid", entry.characteristicUuid.c_str()) ||
+				!cJSON_AddStringToObject(item, "cccdValue", value.c_str()) ||
+				!cJSON_AddNumberToObject(item, "observedAtUptimeMs", entry.subscriptionObservedAtUptimeMs) ||
+				!cJSON_AddStringToObject(item, "connectionFreshness", "current"))
+			{
+				if (item) cJSON_Delete(item);
+				cJSON_Delete(subscriptionDiagnostics);
+				cJSON_Delete(lastObservedSubscriptions);
+				cJSON_Delete(lastPublicationStatuses);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
+			if (!cJSON_AddItemToArray(lastObservedSubscriptions, item))
+			{
+				cJSON_Delete(item);
+				cJSON_Delete(subscriptionDiagnostics);
+				cJSON_Delete(lastObservedSubscriptions);
+				cJSON_Delete(lastPublicationStatuses);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
+		}
+		if (entry.publicationStatusObserved)
+		{
+			cJSON* item = cJSON_CreateObject();
+			if (!item || !cJSON_AddStringToObject(item, "connectionId", connectionId.c_str()) ||
+				!cJSON_AddStringToObject(item, "peerAddress", entry.peerAddress.c_str()) ||
+				!cJSON_AddStringToObject(item, "characteristicUuid", entry.characteristicUuid.c_str()) ||
+				!cJSON_AddNumberToObject(item, "statusCode", entry.publicationStatusCode) ||
+				!cJSON_AddStringToObject(item, "statusKind", publicationStatusKindName(entry.publicationStatusKind)) ||
+				!cJSON_AddNumberToObject(item, "observedAtUptimeMs", entry.publicationStatusObservedAtUptimeMs) ||
+				!cJSON_AddStringToObject(item, "connectionFreshness", "current"))
+			{
+				if (item) cJSON_Delete(item);
+				cJSON_Delete(subscriptionDiagnostics);
+				cJSON_Delete(lastObservedSubscriptions);
+				cJSON_Delete(lastPublicationStatuses);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
+			if (!cJSON_AddItemToArray(lastPublicationStatuses, item))
+			{
+				cJSON_Delete(item);
+				cJSON_Delete(subscriptionDiagnostics);
+				cJSON_Delete(lastObservedSubscriptions);
+				cJSON_Delete(lastPublicationStatuses);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
+		}
+	}
+	if (!cJSON_AddNumberToObject(subscriptionDiagnostics, "currentConnectionCount", diagnostics.currentConnectionCount) ||
+		!cJSON_AddNumberToObject(subscriptionDiagnostics, "maximumEntries", BluetoothManager::MaxGattObservationEntries) ||
+		!cJSON_AddStringToObject(subscriptionDiagnostics, "subscriptionSemantics",
+			"Each value is the latest observed onSubscribe callback for a current connection. Absence means no event was observed; it does not mean Off. Disconnect clears observations.") ||
+		!cJSON_AddStringToObject(subscriptionDiagnostics, "publicationStatusSemantics",
+			"Asynchronous connection-scoped NimBLE status only: code 0 is notification TX status, BLE_HS_EDONE is indication acknowledgement, and other nonzero codes are errors. None proves client-application receipt."))
+	{
+		cJSON_Delete(subscriptionDiagnostics);
+		cJSON_Delete(lastObservedSubscriptions);
+		cJSON_Delete(lastPublicationStatuses);
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+	if (!cJSON_AddItemToObject(subscriptionDiagnostics, "lastObservedSubscriptions", lastObservedSubscriptions))
+	{
+		cJSON_Delete(subscriptionDiagnostics);
+		cJSON_Delete(lastObservedSubscriptions);
+		cJSON_Delete(lastPublicationStatuses);
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+	lastObservedSubscriptions = nullptr;
+	if (!cJSON_AddItemToObject(subscriptionDiagnostics, "lastPublicationStatuses", lastPublicationStatuses))
+	{
+		cJSON_Delete(subscriptionDiagnostics);
+		cJSON_Delete(lastPublicationStatuses);
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+	lastPublicationStatuses = nullptr;
+	if (!cJSON_AddItemToObject(json, "subscriptionDiagnostics", subscriptionDiagnostics))
+	{
+		cJSON_Delete(subscriptionDiagnostics);
 		cJSON_Delete(json);
 		sendJson(request, 500, nullptr);
 		return ESP_OK;

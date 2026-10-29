@@ -87,14 +87,20 @@ static NimBLEService descriptorFixture(2,FixtureGatt::DescriptorServiceUuid);
 static NimBLECharacteristic existing(FixtureGatt::ExistingCharacteristicUuid);
 static NimBLECharacteristic notify(FixtureGatt::NotificationCharacteristicUuid);
 static NimBLECharacteristic indicate(FixtureGatt::IndicationCharacteristicUuid);
+static NimBLECharacteristic dual(FixtureGatt::DualUpdateCharacteristicUuid);
 static NimBLECharacteristic temperature(FixtureGatt::TemperatureUuid);
+static NimBLECharacteristic writableDescription(FixtureGatt::WritableDescriptionUuid);
+static NimBLECharacteristic unsignedRange(FixtureGatt::UnsignedRangeUuid);
+static NimBLECharacteristic unresolvedRange(FixtureGatt::UnresolvedRangeUuid);
 static NimBLEService managedService(3,Svc);
 
 static void setup() {
     nativeServer.m_svcVec.clear();
     fixture.clearCharacteristics(); descriptorFixture.clearCharacteristics();
     fixture.addCharacteristic(&existing); fixture.addCharacteristic(&notify);
-    fixture.addCharacteristic(&indicate); descriptorFixture.addCharacteristic(&temperature);
+    fixture.addCharacteristic(&indicate); fixture.addCharacteristic(&dual);
+    descriptorFixture.addCharacteristic(&temperature); descriptorFixture.addCharacteristic(&writableDescription);
+    descriptorFixture.addCharacteristic(&unsignedRange); descriptorFixture.addCharacteristic(&unresolvedRange);
     nativeServer.m_svcVec.push_back(&fixture); nativeServer.m_svcVec.push_back(&descriptorFixture);
     DynamicGatt::activeServer=&nativeServer; DynamicGatt::sequence=0;
     for(auto& m:DynamicGatt::managed) m=DynamicGatt::Managed{};
@@ -131,10 +137,18 @@ static void testProtectedUuidDerivation() {
           "fixture notification UUID is protected");
     check(add(Svc,FixtureGatt::IndicationCharacteristicUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
           "fixture indication UUID is protected");
+    check(add(Svc,FixtureGatt::DualUpdateCharacteristicUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "dual-update characteristic UUID is protected");
     check(add(FixtureGatt::DescriptorServiceUuid,Chr,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
           "descriptor fixture service UUID is protected");
     check(add(Svc,FixtureGatt::TemperatureUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
           "descriptor fixture characteristic UUID is protected");
+    check(add(Svc,FixtureGatt::WritableDescriptionUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "writable-description fixture UUID is protected");
+    check(add(Svc,FixtureGatt::UnsignedRangeUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "unsigned-range fixture UUID is protected");
+    check(add(Svc,FixtureGatt::UnresolvedRangeUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "unresolved-range fixture UUID is protected");
 }
 static void testDuplicatesCapacityOverflow() {
     setup(); std::string s,c;

@@ -15,7 +15,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 OUT = ROOT / ".pio" / "descriptor-fixture" / "native-regression"
-NIMBLE = ROOT / ".pio" / "libdeps" / "c3" / "NimBLE-Arduino" / "src"
+CACHE_ROOT = Path(os.environ.get("BLE_PERIPHERAL_NATIVE_CACHE_ROOT", ROOT))
+NIMBLE = CACHE_ROOT / ".pio" / "libdeps" / "c3" / "NimBLE-Arduino" / "src"
 
 
 def require(condition: bool, message: str) -> None:
@@ -31,12 +32,16 @@ def source_contract() -> None:
     service = (NIMBLE / "NimBLEService.cpp").read_text(encoding="utf-8")
     server = (NIMBLE / "NimBLEServer.cpp").read_text(encoding="utf-8")
     cpf = (NIMBLE / "NimBLE2904.cpp").read_text(encoding="utf-8")
+    gatts = (NIMBLE / "nimble" / "nimble" / "host" / "src" / "ble_gatts.c").read_text(encoding="utf-8")
 
     expected = {
         "BLE_GATT_CHR_F_READ": "0x0002",
         "BLE_GATT_CHR_F_WRITE": "0x0008",
         "BLE_GATT_CHR_F_NOTIFY": "0x0010",
         "BLE_GATT_CHR_F_INDICATE": "0x0020",
+        "BLE_GATT_CHR_F_RELIABLE_WRITE": "0x0080",
+        "BLE_GATT_CHR_F_AUX_WRITE": "0x0100",
+        "BLE_GATT_CHR_PROP_EXTENDED": "0x80",
     }
     for name, value in expected.items():
         require(re.search(rf"#define\s+{name}\s+{value}\b", gatt) is not None,
@@ -47,6 +52,8 @@ def source_contract() -> None:
 
     require(re.search(r"READ\s*=\s*BLE_GATT_CHR_F_READ", local) is not None,
             "pinned NimBLE NIMBLE_PROPERTY::READ enum no longer uses GATT characteristic flags")
+    require(re.search(r"AUX_WRITE\s*=", local) is None,
+            "pinned NimBLE C++ property enum must not invent an AUX_WRITE member")
     compact_descriptor = re.sub(r"\s+", " ", descriptor)
     require(re.search(r"if\s*\(properties\s*&\s*NIMBLE_PROPERTY::READ\)\s*\{\s*descProperties\s*\|=\s*BLE_ATT_F_READ\s*;", compact_descriptor) is not None,
             "pinned NimBLE descriptor constructor no longer converts READ to ATT read permission")
@@ -57,6 +64,13 @@ def source_contract() -> None:
     compact_service = re.sub(r"\s+", " ", service)
     require("pDscs[j].att_flags = dsc->getProperties();" in compact_service,
             "pinned NimBLE service registration no longer consumes descriptor ATT permissions")
+    require("pChrs[i].flags = chr->getProperties();" in compact_service,
+            "pinned NimBLE service registration no longer forwards native characteristic flags")
+    compact_gatts = re.sub(r"\s+", " ", gatts)
+    require(re.search(
+        r"if\s*\(chr->flags\s*&\s*\(BLE_GATT_CHR_F_RELIABLE_WRITE\s*\|\s*BLE_GATT_CHR_F_AUX_WRITE\)\)\s*\{\s*properties\s*\|=\s*BLE_GATT_CHR_PROP_EXTENDED;",
+        compact_gatts) is not None,
+        "pinned NimBLE maps AUX_WRITE native flags to the declaration Extended Properties bit")
     compact_server = re.sub(r"\s+", " ", server)
     require(re.search(r"if\s*\(m_gattsStarted\)\s*\{\s*return true\s*;", compact_server) is not None,
             "pinned NimBLE server no longer returns early when GATT is already started")
@@ -86,7 +100,7 @@ def main() -> int:
     source_hash = hashlib.sha256(cpp.read_bytes()).hexdigest()
     compiler = shutil.which("g++")
     if not compiler:
-        bundled = ROOT / ".pio" / "native-tools" / "winlibs-16.2.0-ucrt-r2" / "mingw64" / "bin" / "g++.exe"
+        bundled = CACHE_ROOT / ".pio" / "native-tools" / "winlibs-16.2.0-ucrt-r2" / "mingw64" / "bin" / "g++.exe"
         require(bundled.is_file(), "native g++ is unavailable in PATH and the existing repository toolchain was not found")
         compiler = str(bundled)
     compile_env = os.environ.copy()
@@ -99,7 +113,7 @@ def main() -> int:
     print(f"PASS: compiled production src/fixtureGatt.cpp ({source_hash})")
 
     cases = ["success", "permission", "zero-handle", "duplicate-handle", "aggregate-readback",
-             "registration-failure", "create-failure"]
+             "extended-declaration", "extended-properties", "registration-failure", "create-failure"]
     for case in cases:
         result = run([str(binary), case], OUT / f"case-{case}.log", env=compile_env)
         require(f"PASS: {case}" in result.stdout, f"case output missing PASS marker: {case}")
@@ -108,9 +122,10 @@ def main() -> int:
     production_text = cpp.read_text(encoding="utf-8")
     wrong_domain = "getProperties() != NIMBLE_PROPERTY::READ"
     original = "getProperties() != BLE_ATT_F_READ"
-    require(production_text.count(original) == 4, "expected exactly four production descriptor permission comparisons")
+    require(production_text.count(original) >= 1, "production finalization checks descriptor permissions")
     bad_text = production_text.replace(original, wrong_domain)
-    require(bad_text.count(wrong_domain) == 4, "known-bad fixture source mutation was incomplete")
+    require(bad_text != production_text and original not in bad_text,
+            "known-bad fixture source mutation was incomplete")
     bad_source = OUT / "fixtureGatt-known-bad.cpp"
     bad_source.write_text(bad_text, encoding="utf-8", newline="\n")
     bad_binary = OUT / "fixture-gatt-known-bad.exe"

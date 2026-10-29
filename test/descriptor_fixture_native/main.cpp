@@ -47,11 +47,15 @@ namespace
 			std::strcmp(FixtureGatt::ExistingCharacteristicUuid, "12345678-1234-5678-1234-56789abcdef1") == 0 &&
 			std::strcmp(FixtureGatt::NotificationCharacteristicUuid, "12345678-1234-5678-1234-56789abcdef2") == 0 &&
 			std::strcmp(FixtureGatt::IndicationCharacteristicUuid, "12345678-1234-5678-1234-56789abcdef3") == 0 &&
-			std::strcmp(FixtureGatt::CustomDescriptorUuid, "12345678-1234-5678-1234-56789abcdef4") == 0,
-			"approved original service, characteristic, and custom descriptor UUIDs");
+			std::strcmp(FixtureGatt::CustomDescriptorUuid, "12345678-1234-5678-1234-56789abcdef4") == 0 &&
+			std::strcmp(FixtureGatt::DualUpdateCharacteristicUuid, "12345678-1234-5678-1234-56789abcdef5") == 0,
+			"approved original and appended publication UUIDs");
 		ok &= check(std::strcmp(FixtureGatt::DescriptorServiceUuid, "12345678-1234-5678-1234-56789abcdf00") == 0 &&
-			std::strcmp(FixtureGatt::TemperatureUuid, "12345678-1234-5678-1234-56789abcdf05") == 0,
-			"approved descriptor-fixture service and temperature UUIDs");
+			std::strcmp(FixtureGatt::TemperatureUuid, "12345678-1234-5678-1234-56789abcdf05") == 0 &&
+			std::strcmp(FixtureGatt::WritableDescriptionUuid, "12345678-1234-5678-1234-56789abcdf08") == 0 &&
+			std::strcmp(FixtureGatt::UnsignedRangeUuid, "12345678-1234-5678-1234-56789abcdf09") == 0 &&
+			std::strcmp(FixtureGatt::UnresolvedRangeUuid, "12345678-1234-5678-1234-56789abcdf10") == 0,
+			"approved descriptor-fixture service, writable description, and range UUIDs");
 		ok &= check(std::strcmp(FixtureGatt::ExistingCharacteristicValue, "Ima Characteristic") == 0 &&
 			std::strcmp(FixtureGatt::NotificationCharacteristicValue, "Notify Characteristic") == 0 &&
 			std::strcmp(FixtureGatt::IndicationCharacteristicValue, "Indicate Characteristic") == 0 &&
@@ -65,25 +69,31 @@ namespace
 
 	bool fixtureContentsAreExact(NimBLEServer& server)
 	{
-		constexpr std::array<const char*, 7> names = {{"Exponent Zero", "Exponent Positive", "Exponent Negative Minimum",
-			"Exponent Negative Two", "Temperature Scalar", "Aggregate Value", "Temperature Update Trigger"}};
+		constexpr std::array<const char*, 8> names = {{"Exponent Zero", "Exponent Positive", "Exponent Negative Minimum",
+			"Exponent Negative Two", "Temperature Scalar", "Aggregate Value", "Temperature Update Trigger", "Writable User Description"}};
 		constexpr std::array<int8_t, 5> exponents = {{0, 127, -128, -2, -1}};
 		constexpr uint8_t scalar[] = {0xEB, 0x00};
 		constexpr uint8_t aggregateValue[] = {0xEB, 0x00, 0x2A};
 		constexpr uint8_t rangeValue[] = {0x70, 0xFE, 0xE8, 0x03};
+		constexpr uint8_t extendedPropertiesValue[] = {0x02, 0x00};
+		constexpr uint8_t unsignedValue[] = {0x0A};
+		constexpr uint8_t unsignedRangeValue[] = {0x02, 0x2A};
+		constexpr uint8_t unresolvedValue[] = {0x0A, 0x00};
+		constexpr uint8_t unresolvedRangeValue[] = {0x02, 0x00, 0x2A, 0x00};
 		bool ok = true;
 		auto* original = server.getServiceByUUID(FixtureGatt::ServiceUuid);
 		auto* fixtures = fixtureService(server);
 		ok &= check(server.servicesForTest().size() == 2, "exactly two original and fixture services");
-		ok &= check(original && original->characteristicsForTest().size() == 3, "original service keeps three characteristics");
-		ok &= check(fixtures && fixtures->characteristicsForTest().size() == 7, "fixture service has seven characteristics");
+		ok &= check(original && original->characteristicsForTest().size() == 4, "original service appends the dual-update characteristic");
+		ok &= check(fixtures && fixtures->characteristicsForTest().size() == 10, "descriptor fixture appends writable-description and two range cases");
 		if (!original || !fixtures) return false;
-		ok &= check(original->managedCccdCountForTest() == 2 && fixtures->managedCccdCountForTest() == 1,
+		ok &= check(original->managedCccdCountForTest() == 3 && fixtures->managedCccdCountForTest() == 1,
 			"stack-managed CCCD count follows notify/indicate characteristics");
 
 		auto* existing = original->getCharacteristic(FixtureGatt::ExistingCharacteristicUuid);
 		auto* notification = original->getCharacteristic(FixtureGatt::NotificationCharacteristicUuid);
 		auto* indication = original->getCharacteristic(FixtureGatt::IndicationCharacteristicUuid);
+		auto* dual = original->getCharacteristic(FixtureGatt::DualUpdateCharacteristicUuid);
 		ok &= check(existing && existing->getProperties() == (NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE) &&
 			bytes(existing) == std::vector<uint8_t>(FixtureGatt::ExistingCharacteristicValue,
 				FixtureGatt::ExistingCharacteristicValue + sizeof(FixtureGatt::ExistingCharacteristicValue) - 1),
@@ -98,6 +108,11 @@ namespace
 			bytes(indication) == std::vector<uint8_t>(FixtureGatt::IndicationCharacteristicValue,
 				FixtureGatt::IndicationCharacteristicValue + sizeof(FixtureGatt::IndicationCharacteristicValue) - 1),
 			"original indication characteristic and bytes are preserved");
+		ok &= check(dual && dual->getProperties() == (NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE) &&
+			dual->getValue().max_size() == BLE_ATT_ATTR_MAX_LEN &&
+			bytes(dual) == std::vector<uint8_t>({'D','u','a','l',' ','u','p','d','a','t','e',' ','c','h','a','r','a','c','t','e','r','i','s','t','i','c'}) &&
+			dual->descriptorsForTest().empty(),
+			"dual-update target supports both properties and receives exactly one stack-managed CCCD");
 		auto* custom = notification ? notification->getDescriptorByUUID(NimBLEUUID(FixtureGatt::CustomDescriptorUuid)) : nullptr;
 		ok &= check(notification && notification->descriptorsForTest().size() == 1 && custom &&
 			custom->getProperties() == (BLE_ATT_F_READ | BLE_ATT_F_WRITE) &&
@@ -107,23 +122,60 @@ namespace
 		ok &= check(notification && notification->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2901})) == nullptr,
 			"original custom descriptor UUID is not replaced by a fixture user description");
 
-		for (size_t i = 0; i < names.size(); ++i)
+		for (size_t i = 0; i < 10; ++i)
 		{
 			auto* characteristic = fixtureCharacteristic(server, i);
 			const uint16_t properties = i == 6 ? NIMBLE_PROPERTY::WRITE : i == 4 ?
-				NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY : NIMBLE_PROPERTY::READ;
-			const size_t maxLength = i == 6 ? 1 : i == 5 ? 3 : i == 4 ? BLE_ATT_ATTR_MAX_LEN : 2;
+				NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY : i == 7 ? NIMBLE_PROPERTY::READ | BLE_GATT_CHR_F_AUX_WRITE : NIMBLE_PROPERTY::READ;
+			const size_t maxLength = i == 6 ? 1 : i == 5 ? 3 : i == 4 || i == 7 ? BLE_ATT_ATTR_MAX_LEN : i == 8 ? 1 : 2;
 			const std::vector<uint8_t> expectedValue = i < 5 ? std::vector<uint8_t>(scalar, scalar + sizeof(scalar)) :
-				i == 5 ? std::vector<uint8_t>(aggregateValue, aggregateValue + sizeof(aggregateValue)) : std::vector<uint8_t>{};
+				i == 5 ? std::vector<uint8_t>(aggregateValue, aggregateValue + sizeof(aggregateValue)) :
+				i == 8 ? std::vector<uint8_t>(unsignedValue, unsignedValue + sizeof(unsignedValue)) :
+				i == 9 ? std::vector<uint8_t>(unresolvedValue, unresolvedValue + sizeof(unresolvedValue)) : std::vector<uint8_t>{};
 			ok &= check(characteristic && characteristic->getProperties() == properties &&
 				characteristic->getValue().max_size() == maxLength && bytes(characteristic) == expectedValue,
 				"fixture characteristic " + std::to_string(i + 1) + " contract/value");
 			if (!characteristic) continue;
-			auto* userDescription = descriptor(characteristic, 0x2901);
-			ok &= check(userDescription && userDescription->getProperties() == BLE_ATT_F_READ &&
-				bytes(userDescription) == std::vector<uint8_t>(names[i], names[i] + std::strlen(names[i])),
-				"exact user description " + std::to_string(i + 1));
-			if (i < 6)
+			if (i < names.size())
+			{
+				auto* userDescription = descriptor(characteristic, 0x2901);
+				const uint16_t expectedPermissions = i == 7 ? BLE_ATT_F_READ | BLE_ATT_F_WRITE : BLE_ATT_F_READ;
+				const size_t expectedMaximum = i == 7 ? 128 : std::strlen(names[i]);
+				ok &= check(userDescription && userDescription->getProperties() == expectedPermissions &&
+					userDescription->getCharacteristic() == characteristic && userDescription->getHandle() != 0 &&
+					userDescription->getValue().max_size() == expectedMaximum &&
+					bytes(userDescription) == std::vector<uint8_t>(names[i], names[i] + std::strlen(names[i])) &&
+					characteristic->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2901}), 1) == nullptr,
+					"exact uniquely owned user description and ATT permissions " + std::to_string(i + 1));
+			}
+			else
+				ok &= check(characteristic->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2901})) == nullptr,
+					"range fixture omits unspecified User Description " + std::to_string(i + 1));
+
+			if (i == 7)
+			{
+				auto* extended = descriptor(characteristic, 0x2900);
+				std::vector<uint8_t> declaration;
+				std::vector<uint8_t> nativeBytes;
+				ok &= check(extended && characteristic->descriptorsForTest().size() == 2 &&
+					characteristic->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2900}), 1) == nullptr &&
+					extended->getCharacteristic() == characteristic && extended->getUUID() == NimBLEUUID(uint16_t{0x2900}) &&
+					extended->getHandle() != 0 && extended->getProperties() == BLE_ATT_F_READ &&
+					extended->getValue().max_size() == 2 &&
+					bytes(extended) == std::vector<uint8_t>(extendedPropertiesValue, extendedPropertiesValue + sizeof(extendedPropertiesValue)),
+					"exactly one read-only, two-byte Extended Properties descriptor is owned by df08");
+				const bool readTable = extended && NimBLETest::attRead(extended->getHandle(), nativeBytes) == NimBLETest::AttResult::Success;
+			ok &= check(readTable && nativeBytes == std::vector<uint8_t>(extendedPropertiesValue, extendedPropertiesValue + sizeof(extendedPropertiesValue)),
+				"native local ATT table returns exact 0x2900 bytes");
+			const bool declarationRead = NimBLETest::readCharacteristicDeclaration(characteristic, declaration);
+			ok &= check(declarationRead && declaration.size() == 19 &&
+				declaration[0] == static_cast<uint8_t>(BLE_GATT_CHR_PROP_READ | BLE_GATT_CHR_PROP_EXTENDED) &&
+				(static_cast<uint16_t>(declaration[1]) | static_cast<uint16_t>(declaration[2]) << 8) == characteristic->getHandle(),
+				"native characteristic declaration advertises Extended Properties and df08 value handle");
+			ok &= check(NimBLETest::attWrite(extended->getHandle(), {0x00, 0x00}) == NimBLETest::AttResult::WriteNotPermitted,
+				"read-only 0x2900 rejects ATT writes");
+		}
+		if (i < 6 || i == 8)
 			{
 				auto* format = descriptor(characteristic, 0x2904);
 				const std::vector<uint8_t> expectedFormat = {
@@ -146,7 +198,23 @@ namespace
 				ok &= check(aggregate && aggregate->getProperties() == BLE_ATT_F_READ && aggregate->getValue().max_size() == 4,
 					"aggregate descriptor retains four-byte capacity and read permission");
 			}
+			if (i == 8 || i == 9)
+			{
+				auto* range = descriptor(characteristic, 0x2906);
+				const auto expected = i == 8 ? std::vector<uint8_t>(unsignedRangeValue, unsignedRangeValue + sizeof(unsignedRangeValue)) :
+					std::vector<uint8_t>(unresolvedRangeValue, unresolvedRangeValue + sizeof(unresolvedRangeValue));
+				ok &= check(range && range->getCharacteristic() == characteristic && range->getProperties() == BLE_ATT_F_READ &&
+					range->getValue().max_size() == expected.size() && bytes(range) == expected,
+					i == 8 ? "unsigned df09 retains exact uint8 range 02..2A" : "unresolved df10 retains raw Valid Range bytes without CPF/Aggregate");
+				if (i == 9)
+					ok &= check(descriptor(characteristic, 0x2904) == nullptr && descriptor(characteristic, 0x2905) == nullptr,
+						"unresolved df10 has no fabricated type or Aggregate metadata");
+			}
 		}
+		constexpr std::array<size_t, 10> descriptorCounts = {{2,2,2,3,2,3,1,2,2,1}};
+		for (size_t i = 0; i < descriptorCounts.size(); ++i)
+			ok &= check(fixtures->characteristicsForTest()[i]->descriptorsForTest().size() == descriptorCounts[i],
+				"exact application descriptor count for fixture " + std::to_string(i + 1) + "; CCCDs remain stack-managed");
 		ok &= check(fixtures->characteristicsForTest()[0]->descriptorsForTest().size() == 2 &&
 			fixtures->characteristicsForTest()[1]->descriptorsForTest().size() == 2 &&
 			fixtures->characteristicsForTest()[2]->descriptorsForTest().size() == 2 &&
@@ -154,9 +222,50 @@ namespace
 			fixtures->characteristicsForTest()[4]->descriptorsForTest().size() == 2 &&
 			fixtures->characteristicsForTest()[5]->descriptorsForTest().size() == 3 &&
 			fixtures->characteristicsForTest()[6]->descriptorsForTest().size() == 1,
-			"exact application descriptor counts; CCCDs remain stack-managed");
+			"original descriptor object counts remain stable");
 		ok &= check(fixtures->characteristicsForTest()[5]->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2905}), 1) == nullptr,
 			"aggregate descriptor is unique");
+		return ok;
+	}
+
+	bool writableDescriptionAttRoundTrip(NimBLEServer& server)
+	{
+		auto* characteristic = fixtureCharacteristic(server, 7);
+		auto* description = descriptor(characteristic, 0x2901);
+		auto* readOnly = descriptor(fixtureCharacteristic(server, 0), 0x2901);
+		if (!characteristic || !description || !readOnly) return check(false, "df08 User Description ATT records are registered");
+		bool ok = true;
+		std::vector<uint8_t> observed;
+		ok &= check(NimBLETest::attRead(description->getHandle(), observed) == NimBLETest::AttResult::Success &&
+			observed == std::vector<uint8_t>({'W','r','i','t','a','b','l','e',' ','U','s','e','r',' ','D','e','s','c','r','i','p','t','i','o','n'}),
+			"ATT table reads exact df08 seed bytes without a terminator");
+		ok &= check(NimBLETest::attWrite(readOnly->getHandle(), {0x43,0x61,0x74}) == NimBLETest::AttResult::WriteNotPermitted,
+			"original read-only 0x2901 rejects ATT Write Request");
+
+		const std::array<std::vector<uint8_t>, 3> accepted = {{
+			{0x43,0x61,0x66,0xC3,0xA9},
+			{0x43,0x61,0x74},
+			{'L','o','n','g','e','r',' ','f','i','x','t','u','r','e',' ','t','e','x','t'}
+		}};
+		for (const auto& bytes : accepted)
+		{
+			ok &= check(NimBLETest::attWrite(description->getHandle(), bytes, 23) == NimBLETest::AttResult::Success,
+				"writable df08 accepts one in-MTU ATT write request");
+			observed.clear();
+			ok &= check(NimBLETest::attRead(description->getHandle(), observed) == NimBLETest::AttResult::Success &&
+				observed == bytes && ::bytes(description) == bytes,
+				"df08 local ATT readback and wrapper bytes preserve the exact write");
+		}
+
+		const auto lastAccepted = ::bytes(description);
+		const std::vector<uint8_t> overMtu(21, 0x58);
+		ok &= check(NimBLETest::attWrite(description->getHandle(), overMtu, 23) == NimBLETest::AttResult::InvalidLength &&
+			::bytes(description) == lastAccepted,
+			"one-request ATT payload above MTU-3 is rejected without truncating stored bytes");
+		const std::vector<uint8_t> overCapacity(129, 0x59);
+		ok &= check(NimBLETest::attWrite(description->getHandle(), overCapacity, 256) == NimBLETest::AttResult::InvalidLength &&
+			::bytes(description) == lastAccepted,
+			"df08 descriptor capacity of 128 bytes is enforced without truncation");
 		return ok;
 	}
 
@@ -169,15 +278,16 @@ namespace
 		auto* created = FixtureGatt::Create(server);
 		ok &= check(created != nullptr && !FixtureGatt::Ready(), "Create succeeds without publishing readiness");
 		ok &= check(NimBLETest::controls().counters.serviceCreates == 2 &&
-			NimBLETest::controls().counters.characteristicCreates == 10 &&
-			NimBLETest::controls().counters.descriptorCreates == 10 &&
-			NimBLETest::controls().counters.presentationFormatCreates == 6 &&
-			NimBLETest::controls().factoryCalls == 28, "exact fixture factory counts");
+			NimBLETest::controls().counters.characteristicCreates == 14 &&
+			NimBLETest::controls().counters.descriptorCreates == 14 &&
+			NimBLETest::controls().counters.presentationFormatCreates == 7 &&
+			NimBLETest::controls().factoryCalls == 37, "exact fixture factory counts");
 		ok &= check(!FixtureGatt::Finalize() && !FixtureGatt::Ready(), "Finalize fails closed before stack registration");
 		ok &= check(server.start() && !FixtureGatt::Ready(), "registration assigns handles before readiness");
 		ok &= check(FixtureGatt::Finalize(), "expected finalization success but got false");
 		ok &= check(FixtureGatt::Ready(), "ready only after finalization");
 		ok &= fixtureContentsAreExact(server);
+		ok &= writableDescriptionAttRoundTrip(server);
 		const auto registrations = NimBLETest::controls().counters.actualRegistrations;
 		const auto cpfHandle = descriptor(fixtureCharacteristic(server, 4), 0x2904)->getHandle();
 		ok &= check(server.start(), "repeated NimBLE server start succeeds");
@@ -227,6 +337,14 @@ namespace
 			"temperature update trigger still notifies the current scalar value");
 		ok &= check(NimBLETest::controls().counters.notifyCalls == 2 && NimBLETest::controls().counters.indicateCalls == 1,
 			"original callback and temperature trigger dispatch counts");
+		ok &= check(NimBLETest::controls().counters.notifyPayloadOverloadCalls == 0 &&
+			NimBLETest::controls().counters.indicatePayloadOverloadCalls == 0,
+			"trigger callbacks use only stored-value parameterless publication APIs");
+		ok &= check(bytes(notification) == std::vector<uint8_t>(FixtureGatt::NotificationPayload,
+			FixtureGatt::NotificationPayload + sizeof(FixtureGatt::NotificationPayload) - 1) &&
+			bytes(indication) == std::vector<uint8_t>(FixtureGatt::IndicationPayload,
+			FixtureGatt::IndicationPayload + sizeof(FixtureGatt::IndicationPayload) - 1),
+			"canonical trigger payloads are stored on their characteristics before publication");
 
         // A changed publishable value must survive the rebuild finalization path.
         auto* temperature = fixtureCharacteristic(server, 4);
@@ -238,6 +356,11 @@ namespace
         ok &= check(server.start(), "rebuild reassigns registered fixture handles");
         ok &= check(FixtureGatt::FinalizeAfterRebuild() && FixtureGatt::Ready(), "changed runtime value permits rebuild finalization");
         ok &= check(bytes(temperature) == std::vector<uint8_t>(changed, changed + sizeof(changed)), "rebuild preserves changed temperature bytes");
+		auto* writableDescription = descriptor(fixtureCharacteristic(server, 7), 0x2901);
+		std::vector<uint8_t> afterRebuild;
+		ok &= check(writableDescription && NimBLETest::attRead(writableDescription->getHandle(), afterRebuild) == NimBLETest::AttResult::Success &&
+			afterRebuild == std::vector<uint8_t>({'L','o','n','g','e','r',' ','f','i','x','t','u','r','e',' ','t','e','x','t'}),
+			"dynamic rebuild finalization preserves the latest mutable df08 description bytes in native ATT readback");
 		return ok;
 	}
 
@@ -249,6 +372,8 @@ namespace
 		else if (mode == "zero-handle") controls.postRegistrationFault = NimBLETest::Fault::ZeroTemperatureCpfHandle;
 		else if (mode == "duplicate-handle") controls.postRegistrationFault = NimBLETest::Fault::DuplicateCpfHandles;
 		else if (mode == "aggregate-readback") controls.postRegistrationFault = NimBLETest::Fault::CorruptAggregateReadback;
+		else if (mode == "extended-declaration") controls.postRegistrationFault = NimBLETest::Fault::CorruptExtendedDeclaration;
+		else if (mode == "extended-properties") controls.postRegistrationFault = NimBLETest::Fault::CorruptExtendedProperties;
 		else if (mode == "registration-failure") controls.registrationSucceeds = false;
 		else if (mode == "create-failure") controls.failFactoryOrdinal = 2;
 		else return check(false, "unknown failure case: " + mode);
@@ -295,6 +420,19 @@ namespace
 			auto* second = descriptor(fixtureCharacteristic(server, 5), 0x2904);
 			ok &= check(first && second && first->getHandle() == second->getHandle(), "injected duplicate CPF handles");
 		}
+		if (mode == "extended-declaration")
+		{
+			std::vector<uint8_t> declaration;
+			const bool read = NimBLETest::readCharacteristicDeclaration(fixtureCharacteristic(server, 7), declaration);
+			ok &= check(read && declaration.size() == 19 && !(declaration[0] & BLE_GATT_CHR_PROP_EXTENDED),
+				"injected native declaration omits the Extended Properties bit");
+		}
+		if (mode == "extended-properties")
+		{
+			auto* extended = descriptor(fixtureCharacteristic(server, 7), 0x2900);
+			ok &= check(extended && bytes(extended) == std::vector<uint8_t>({0x00,0x00}),
+				"injected 0x2900 value disagrees with the writable auxiliary declaration");
+		}
 		return ok;
 	}
 }
@@ -304,7 +442,11 @@ int main(int argc, char** argv)
 	static_assert(BLE_GATT_CHR_F_READ == 0x0002 && BLE_GATT_CHR_F_WRITE == 0x0008 &&
 		BLE_GATT_CHR_F_NOTIFY == 0x0010 && BLE_GATT_CHR_F_INDICATE == 0x0020,
 		"characteristic properties must use the NimBLE host flag domain");
-	static_assert(BLE_ATT_F_READ == 0x01 && BLE_ATT_F_WRITE == 0x02,
+	static_assert(BLE_GATT_CHR_F_AUX_WRITE == 0x0100 && BLE_GATT_CHR_PROP_EXTENDED == 0x80 &&
+		NIMBLE_PROPERTY::READ == BLE_GATT_CHR_F_READ && NIMBLE_PROPERTY::WRITE == BLE_GATT_CHR_F_WRITE,
+		"AUX_WRITE is a native characteristic flag mapped to a distinct declaration bit");
+	static_assert(BLE_ATT_F_READ == 0x01 && BLE_ATT_F_WRITE == 0x02 && BLE_ATT_F_READ != NIMBLE_PROPERTY::READ &&
+		BLE_ATT_F_WRITE != NIMBLE_PROPERTY::WRITE,
 		"descriptor properties must use the ATT permission flag domain");
 	if (argc != 2) return 2;
 	const std::string mode = argv[1];

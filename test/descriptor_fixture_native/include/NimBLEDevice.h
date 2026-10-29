@@ -16,6 +16,17 @@
 #define BLE_GATT_CHR_F_WRITE 0x0008
 #define BLE_GATT_CHR_F_NOTIFY 0x0010
 #define BLE_GATT_CHR_F_INDICATE 0x0020
+#define BLE_GATT_CHR_F_AUTH_SIGN_WRITE 0x0040
+#define BLE_GATT_CHR_F_RELIABLE_WRITE 0x0080
+#define BLE_GATT_CHR_F_AUX_WRITE 0x0100
+#define BLE_GATT_CHR_PROP_BROADCAST 0x01
+#define BLE_GATT_CHR_PROP_READ 0x02
+#define BLE_GATT_CHR_PROP_WRITE_NO_RSP 0x04
+#define BLE_GATT_CHR_PROP_WRITE 0x08
+#define BLE_GATT_CHR_PROP_NOTIFY 0x10
+#define BLE_GATT_CHR_PROP_INDICATE 0x20
+#define BLE_GATT_CHR_PROP_AUTH_SIGN_WRITE 0x40
+#define BLE_GATT_CHR_PROP_EXTENDED 0x80
 #define BLE_ATT_F_READ 0x01
 #define BLE_ATT_F_WRITE 0x02
 
@@ -27,14 +38,43 @@ inline constexpr uint16_t WRITE_NR = BLE_GATT_CHR_F_WRITE_NO_RSP;
 inline constexpr uint16_t WRITE = BLE_GATT_CHR_F_WRITE;
 inline constexpr uint16_t NOTIFY = BLE_GATT_CHR_F_NOTIFY;
 inline constexpr uint16_t INDICATE = BLE_GATT_CHR_F_INDICATE;
+inline constexpr uint16_t AUTH_SIGN_WRITE = BLE_GATT_CHR_F_AUTH_SIGN_WRITE;
 }
 
 class NimBLEServer;
+class NimBLELocalValueAttribute;
+class NimBLECharacteristic;
 
 namespace NimBLETest
 {
 enum class FactoryKind { Service, Characteristic, Descriptor, PresentationFormat };
-enum class Fault { None, DescriptionWritePermission, ZeroTemperatureCpfHandle, DuplicateCpfHandles, CorruptAggregateReadback };
+enum class Fault
+{
+	None,
+	DescriptionWritePermission,
+	ZeroTemperatureCpfHandle,
+	DuplicateCpfHandles,
+	CorruptAggregateReadback,
+	CorruptExtendedDeclaration,
+	CorruptExtendedProperties
+};
+enum class AttResult { Success, NotFound, ReadNotPermitted, WriteNotPermitted, InvalidLength };
+
+struct NativeAttribute
+{
+	NimBLELocalValueAttribute* attribute = nullptr;
+	uint16_t handle = 0;
+	uint16_t permissions = 0;
+	bool descriptor = false;
+};
+
+struct NativeDeclaration
+{
+	NimBLECharacteristic* characteristic = nullptr;
+	uint16_t declarationHandle = 0;
+	uint16_t valueHandle = 0;
+	uint8_t properties = 0;
+};
 
 struct Counters
 {
@@ -46,6 +86,8 @@ struct Counters
 	size_t actualRegistrations = 0;
 	size_t notifyCalls = 0;
 	size_t indicateCalls = 0;
+	size_t notifyPayloadOverloadCalls = 0;
+	size_t indicatePayloadOverloadCalls = 0;
 };
 
 struct Controls
@@ -58,6 +100,9 @@ struct Controls
 	bool registrationComplete = false;
 	std::vector<uint8_t> lastNotification;
 	std::vector<uint8_t> lastIndication;
+	std::vector<NativeAttribute> nativeAttributes;
+	std::vector<NativeDeclaration> nativeDeclarations;
+	std::vector<std::pair<NimBLECharacteristic*, uint16_t>> managedCccds;
 };
 
 Controls& controls();
@@ -65,6 +110,9 @@ void reset();
 bool allowFactory(FactoryKind kind);
 bool corruptAggregateReadback();
 void afterRegistration(::NimBLEServer& server);
+AttResult attRead(uint16_t handle, std::vector<uint8_t>& bytes);
+AttResult attWrite(uint16_t handle, const std::vector<uint8_t>& bytes, uint16_t mtu = 23);
+bool readCharacteristicDeclaration(const NimBLECharacteristic* characteristic, std::vector<uint8_t>& bytes);
 }
 
 class NimBLEUUID
@@ -80,6 +128,7 @@ public:
 	}
 	bool operator!=(const NimBLEUUID& other) const { return !(*this == other); }
 	std::string toString() const { return short_ ? std::to_string(shortValue_) : stringValue_; }
+	const NimBLEUUID* getBase() const { return this; }
 
 private:
 	std::string stringValue_;
@@ -237,6 +286,7 @@ public:
 	bool indicate(const uint8_t* bytes, size_t length) const;
 	const std::vector<std::unique_ptr<NimBLEDescriptor>>& descriptorsForTest() const { return descriptors_; }
 	NimBLEService* serviceForTest() const { return service_; }
+	NimBLEService* getService() const { return service_; }
 
 private:
 	void addDescriptor(std::unique_ptr<NimBLEDescriptor> descriptor) { descriptors_.push_back(std::move(descriptor)); }
@@ -261,6 +311,7 @@ public:
 	uint16_t getHandle() const { return handle_; }
 	const std::vector<std::unique_ptr<NimBLECharacteristic>>& characteristicsForTest() const { return characteristics_; }
 	size_t managedCccdCountForTest() const { return managedCccdCount_; }
+	const std::vector<std::unique_ptr<NimBLECharacteristic>>& getCharacteristics() const { return characteristics_; }
 
 private:
 	NimBLEUUID uuid_;
@@ -269,6 +320,26 @@ private:
 	size_t managedCccdCount_ = 0;
 	friend class NimBLEServer;
 };
+
+struct os_mbuf
+{
+	std::vector<uint8_t> bytes;
+};
+
+#define OS_MBUF_PKTLEN(value) ((value)->bytes.size())
+inline int os_mbuf_copydata(const os_mbuf* source, size_t offset, size_t length, void* destination)
+{
+	if (!source || offset > source->bytes.size() || length > source->bytes.size() - offset) return -1;
+	if (length) std::memcpy(destination, source->bytes.data() + offset, length);
+	return 0;
+}
+inline void os_mbuf_free_chain(os_mbuf* value) { delete value; }
+
+int ble_gatts_find_chr(const NimBLEUUID* service, const NimBLEUUID* characteristic,
+	uint16_t* declarationHandle, uint16_t* valueHandle);
+int ble_gatts_find_dsc(const NimBLEUUID* service, const NimBLEUUID* characteristic,
+	const NimBLEUUID* descriptor, uint16_t* handle);
+int ble_att_svr_read_local(uint16_t handle, os_mbuf** data);
 
 class NimBLEServer
 {

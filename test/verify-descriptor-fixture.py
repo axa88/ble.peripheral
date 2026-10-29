@@ -159,32 +159,69 @@ def main():
         "NotificationCharacteristicUuid": "12345678-1234-5678-1234-56789abcdef2",
         "IndicationCharacteristicUuid": "12345678-1234-5678-1234-56789abcdef3",
         "CustomDescriptorUuid": "12345678-1234-5678-1234-56789abcdef4",
+        "DualUpdateCharacteristicUuid": "12345678-1234-5678-1234-56789abcdef5",
         "ExistingCharacteristicValue": "Ima Characteristic",
         "NotificationCharacteristicValue": "Notify Characteristic",
         "IndicationCharacteristicValue": "Indicate Characteristic",
         "CustomDescriptorValue": "Custom Descriptor",
+        "WritableDescriptionUuid": "12345678-1234-5678-1234-56789abcdf08",
+        "UnsignedRangeUuid": "12345678-1234-5678-1234-56789abcdf09",
+        "UnresolvedRangeUuid": "12345678-1234-5678-1234-56789abcdf10",
     }
     require(
         all(re.search(rf'inline constexpr char {name}\[\]\s*=\s*"{re.escape(value)}"\s*;', fixture_header)
             for name, value in expected_constants.items()),
-        "original fixture UUID and value constants match the approved manifest",
+        "original and appended fixture UUID/value constants match the approved manifest",
     )
     normalized_create = re.sub(r"\s+", " ", create)
     require(
         all(token in normalized_create for token in (
             "service->createCharacteristic(ExistingCharacteristicUuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE)",
-            "service->createCharacteristic(NotificationCharacteristicUuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY)",
-            "service->createCharacteristic(IndicationCharacteristicUuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::INDICATE)",
+            "notificationFixture = service->createCharacteristic(NotificationCharacteristicUuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY)",
+            "indicationFixture = service->createCharacteristic(IndicationCharacteristicUuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::INDICATE)",
+            "dualUpdateFixture = service->createCharacteristic(DualUpdateCharacteristicUuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE)",
             "customDescriptor->setValue(CustomDescriptorValue)",
-            "notificationCharacteristic->setCallbacks(&notifyCallback)",
-            "indicationCharacteristic->setCallbacks(&indicateCallback)",
+            "notificationFixture->setCallbacks(&notifyCallback)",
+            "indicationFixture->setCallbacks(&indicateCallback)",
         )),
-        "original fixture properties, custom descriptor, and ATT callbacks remain registered",
+        "original and dual publication targets retain their properties and stable descriptors",
     )
     require(
-        "characteristic->notify(payload, payloadLength)" in fixture and
-        "characteristic->indicate(payload, payloadLength)" in fixture,
-        "legacy callback payload publication paths remain present",
+        normalized_create.count("dualUpdateFixture = service->createCharacteristic(DualUpdateCharacteristicUuid") == 1 and
+        "dualUpdateFixture->setCallbacks(&dualUpdateCallback)" in normalized_create,
+        "dual-update target is registered exactly once with its subscription callback",
+    )
+    require(
+        "NIMBLE_PROPERTY::READ | BLE_GATT_CHR_F_AUX_WRITE" in normalized_create and
+        "NIMBLE_PROPERTY::AUX_WRITE" not in normalized_create and
+        "constexpr uint8_t writableDescriptionProperties[] = {0x02, 0x00}" in fixture and
+        "NimBLEUUID(uint16_t{0x2900}), NIMBLE_PROPERTY::READ" in normalized_create and
+        "sizeof(writableDescriptionProperties)" in normalized_create and
+        "i == 7 ? NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE : NIMBLE_PROPERTY::READ" in normalized_create and
+        "i == 7 ? 128 : std::strlen(names[i])" in normalized_create,
+        "df08 uses AUX_WRITE with one read-only 0x2900 and a 128-byte writable 0x2901",
+    )
+    require(
+        "constexpr uint8_t unsignedRangeValue[] = {0x02, 0x2A}" in fixture and
+        "constexpr uint8_t unsignedValue[] = {0x0A}" in fixture and
+        "constexpr uint8_t unresolvedRangeValue[] = {0x02, 0x00, 0x2A, 0x00}" in fixture and
+        "constexpr uint8_t unresolvedValue[] = {0x0A, 0x00}" in fixture and
+        "formats[6] = characteristic->create2904()" in normalized_create,
+        "df09 has unsigned type/range bytes and df10 retains a raw range without inferred CPF",
+    )
+    require(
+        "class FixtureUpdateCallback" in fixture,
+        "stored-value publication callbacks remain registered",
+    )
+    update_callback = function_body(function_body(fixture, "class FixtureUpdateCallback"),
+                                   "void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override")
+    store_index = update_callback.find("characteristic->setValue(payload, payloadLength)")
+    verify_index = update_callback.find("equals(characteristic, payload, payloadLength)")
+    update_calls = list(re.finditer(r"characteristic->(?:notify|indicate)\s*\(\s*\)", update_callback))
+    require(
+        0 <= store_index < verify_index and len(update_calls) == 2 and
+        not re.search(r"characteristic->(?:notify|indicate)\s*\(\s*[^)]", update_callback),
+        "trigger callbacks store and verify payload bytes before parameterless notify/indicate calls",
     )
 
     guard = function_body(web, "bool guardRequest(httpd_req_t* request, bool mutation)")

@@ -19,6 +19,19 @@ namespace
 	{
 		return length ? std::vector<uint8_t>(bytes, bytes + length) : std::vector<uint8_t>{};
 	}
+
+	uint8_t declarationProperties(uint16_t flags)
+	{
+		uint8_t result = 0;
+		if (flags & BLE_GATT_CHR_F_BROADCAST) result |= 0x01;
+		if (flags & BLE_GATT_CHR_F_READ) result |= 0x02;
+		if (flags & BLE_GATT_CHR_F_WRITE_NO_RSP) result |= 0x04;
+		if (flags & BLE_GATT_CHR_F_WRITE) result |= 0x08;
+		if (flags & BLE_GATT_CHR_F_NOTIFY) result |= 0x10;
+		if (flags & BLE_GATT_CHR_F_INDICATE) result |= 0x20;
+		if (flags & (BLE_GATT_CHR_F_RELIABLE_WRITE | BLE_GATT_CHR_F_AUX_WRITE)) result |= BLE_GATT_CHR_PROP_EXTENDED;
+		return result;
+	}
 }
 
 namespace NimBLETest
@@ -51,6 +64,48 @@ namespace NimBLETest
 		return state.registrationComplete && state.postRegistrationFault == Fault::CorruptAggregateReadback;
 	}
 
+	AttResult attRead(uint16_t handle, std::vector<uint8_t>& bytes)
+	{
+		const auto& attributes = controls().nativeAttributes;
+		const auto it = std::find_if(attributes.begin(), attributes.end(), [handle](const NativeAttribute& item) {
+			return item.handle == handle;
+		});
+		if (it == attributes.end() || !it->attribute) return AttResult::NotFound;
+		const uint16_t required = it->descriptor ? BLE_ATT_F_READ : BLE_GATT_CHR_F_READ;
+		if (!(it->permissions & required)) return AttResult::ReadNotPermitted;
+		bytes = capture(it->attribute->getValue());
+		return AttResult::Success;
+	}
+
+	AttResult attWrite(uint16_t handle, const std::vector<uint8_t>& bytes, uint16_t mtu)
+	{
+		const auto& attributes = controls().nativeAttributes;
+		const auto it = std::find_if(attributes.begin(), attributes.end(), [handle](const NativeAttribute& item) {
+			return item.handle == handle;
+		});
+		if (it == attributes.end() || !it->attribute) return AttResult::NotFound;
+		const uint16_t required = it->descriptor ? BLE_ATT_F_WRITE : BLE_GATT_CHR_F_WRITE;
+		if (!(it->permissions & required)) return AttResult::WriteNotPermitted;
+		const size_t singleWriteMaximum = mtu >= 3 ? mtu - 3 : 0;
+		if (bytes.size() > it->attribute->getValue().max_size() || bytes.size() > singleWriteMaximum)
+			return AttResult::InvalidLength;
+		it->attribute->setValue(bytes.data(), bytes.size());
+		return capture(it->attribute->getValue()) == bytes ? AttResult::Success : AttResult::InvalidLength;
+	}
+
+	bool readCharacteristicDeclaration(const NimBLECharacteristic* characteristic, std::vector<uint8_t>& bytes)
+	{
+		const auto& declarations = controls().nativeDeclarations;
+		const auto it = std::find_if(declarations.begin(), declarations.end(), [characteristic](const NativeDeclaration& item) {
+			return item.characteristic == characteristic;
+		});
+		if (it == declarations.end()) return false;
+		bytes = {it->properties, static_cast<uint8_t>(it->valueHandle), static_cast<uint8_t>(it->valueHandle >> 8)};
+		const auto uuidBytes = characteristic->getUUID().toString().size() == 36 ? size_t{16} : size_t{2};
+		bytes.resize(bytes.size() + uuidBytes, 0);
+		return true;
+	}
+
 	void afterRegistration(NimBLEServer& server)
 	{
 		auto& state = controls();
@@ -78,11 +133,79 @@ namespace NimBLETest
 					if (first && second) second->setHandleForTest(first->getHandle());
 				}
 				break;
+			case Fault::CorruptExtendedDeclaration:
+				for (auto& declaration : state.nativeDeclarations)
+					if (declaration.characteristic && declaration.characteristic->getUUID() == NimBLEUUID("12345678-1234-5678-1234-56789abcdf08"))
+						declaration.properties &= static_cast<uint8_t>(~BLE_GATT_CHR_PROP_EXTENDED);
+				break;
+			case Fault::CorruptExtendedProperties:
+				if (auto* writable = service->getCharacteristic("12345678-1234-5678-1234-56789abcdf08"))
+					if (auto* extended = writable->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2900})))
+						extended->setValue(std::vector<uint8_t>{0x00, 0x00}.data(), 2);
+				break;
 			case Fault::None:
 			case Fault::CorruptAggregateReadback:
 				break;
 		}
 	}
+}
+
+int ble_gatts_find_chr(const NimBLEUUID* service, const NimBLEUUID* characteristic,
+	uint16_t* declarationHandle, uint16_t* valueHandle)
+{
+	if (!service || !characteristic) return -1;
+	for (const auto& item : NimBLETest::controls().nativeDeclarations)
+	{
+		if (!item.characteristic || !item.characteristic->getService() ||
+			item.characteristic->getService()->getUUID() != *service || item.characteristic->getUUID() != *characteristic) continue;
+		if (declarationHandle) *declarationHandle = item.declarationHandle;
+		if (valueHandle) *valueHandle = item.valueHandle;
+		return 0;
+	}
+	return 2;
+}
+
+int ble_gatts_find_dsc(const NimBLEUUID* service, const NimBLEUUID* characteristic,
+	const NimBLEUUID* descriptor, uint16_t* handle)
+{
+	if (!service || !characteristic || !descriptor) return -1;
+	for (const auto& item : NimBLETest::controls().nativeAttributes)
+	{
+		auto* value = item.attribute;
+		auto* dsc = dynamic_cast<NimBLEDescriptor*>(value);
+		if (!dsc || !dsc->getCharacteristic() || !dsc->getCharacteristic()->getService() ||
+			dsc->getCharacteristic()->getService()->getUUID() != *service ||
+			dsc->getCharacteristic()->getUUID() != *characteristic || dsc->getUUID() != *descriptor) continue;
+		if (handle) *handle = item.handle;
+		return 0;
+	}
+	for (const auto& item : NimBLETest::controls().managedCccds)
+	{
+		if (!item.first || !item.first->getService() ||
+			item.first->getService()->getUUID() != *service || item.first->getUUID() != *characteristic ||
+			*descriptor != NimBLEUUID(uint16_t{0x2902})) continue;
+		if (handle) *handle = item.second;
+		return 0;
+	}
+	return 2;
+}
+
+int ble_att_svr_read_local(uint16_t handle, os_mbuf** data)
+{
+	if (!data) return -1;
+	*data = nullptr;
+	for (const auto& declaration : NimBLETest::controls().nativeDeclarations)
+	{
+		if (declaration.declarationHandle != handle) continue;
+		std::vector<uint8_t> bytes;
+		if (!NimBLETest::readCharacteristicDeclaration(declaration.characteristic, bytes)) return 2;
+		*data = new os_mbuf{std::move(bytes)};
+		return 0;
+	}
+	std::vector<uint8_t> bytes;
+	if (NimBLETest::attRead(handle, bytes) != NimBLETest::AttResult::Success) return 2;
+	*data = new os_mbuf{std::move(bytes)};
+	return 0;
 }
 
 NimBLEDescriptor::NimBLEDescriptor(const NimBLEUUID& uuid, uint32_t properties, uint16_t maxLength, NimBLECharacteristic* characteristic)
@@ -131,6 +254,7 @@ bool NimBLECharacteristic::notify() const
 bool NimBLECharacteristic::notify(const uint8_t* bytes, size_t length) const
 {
 	++NimBLETest::controls().counters.notifyCalls;
+	++NimBLETest::controls().counters.notifyPayloadOverloadCalls;
 	NimBLETest::controls().lastNotification = capture(bytes, length);
 	return true;
 }
@@ -145,6 +269,7 @@ bool NimBLECharacteristic::indicate() const
 bool NimBLECharacteristic::indicate(const uint8_t* bytes, size_t length) const
 {
 	++NimBLETest::controls().counters.indicateCalls;
+	++NimBLETest::controls().counters.indicatePayloadOverloadCalls;
 	NimBLETest::controls().lastIndication = capture(bytes, length);
 	return true;
 }
@@ -187,6 +312,9 @@ bool NimBLEServer::start()
 	++state.counters.serverStarts;
 	if (state.registrationComplete) return true; // Pinned NimBLE returns immediately once GATT is already started.
 	if (!state.registrationSucceeds) return false;
+	state.nativeAttributes.clear();
+	state.nativeDeclarations.clear();
+	state.managedCccds.clear();
 	uint16_t nextHandle = 1;
 	for (const auto& service : services_)
 	{
@@ -194,14 +322,21 @@ bool NimBLEServer::start()
 		service->managedCccdCount_ = 0;
 		for (const auto& characteristic : service->characteristics_)
 		{
-			++nextHandle; // Characteristic declaration handle.
-			characteristic->setHandleForTest(nextHandle++); // Assigned value handle.
+			const uint16_t declarationHandle = nextHandle++;
+			const uint16_t valueHandle = nextHandle++;
+			characteristic->setHandleForTest(valueHandle);
+			state.nativeDeclarations.push_back({characteristic.get(), declarationHandle, valueHandle,
+				declarationProperties(characteristic->getProperties())});
+			state.nativeAttributes.push_back({characteristic.get(), valueHandle, characteristic->getProperties(), false});
 			for (const auto& descriptor : characteristic->descriptors_)
+			{
 				descriptor->setHandleForTest(nextHandle++);
+				state.nativeAttributes.push_back({descriptor.get(), descriptor->getHandle(), descriptor->getProperties(), true});
+			}
 			if (characteristic->getProperties() & (NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE))
 			{
 				++service->managedCccdCount_; // Stack-managed 0x2902; not an application descriptor object.
-				++nextHandle;
+				state.managedCccds.emplace_back(characteristic.get(), nextHandle++);
 			}
 		}
 	}

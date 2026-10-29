@@ -615,6 +615,8 @@ async function main() {
     'Restore and baseline-only UI/API concepts should be removed');
   assert.doesNotMatch(html, /Use a shorter payload|request a larger ATT MTU|minimum required MTU/,
     'Publication-limit UI should report measurements without suggesting remedies');
+  assert.match(html, /publicationDispatched flag mean NimBLE accepted or queued the request/);
+  assert.match(html, /do not prove peer dispatch or client-application receipt/);
   const peer = (connectionId, address, handle, mtu) => ({
     connectionId, address, handle, mtu, intervalMs: 30, timeoutMs: 4000, latency: 0,
     bonded: false, encrypted: false, authenticated: false, keySize: 0
@@ -624,6 +626,21 @@ async function main() {
   const peer517 = peer('peer-517', '33:44:55:66:77:88', 3, 517);
   const indicationBaseline = Buffer.from('Indicate Characteristic', 'ascii').toString('hex').toUpperCase();
   const indicationSpaced = indicationBaseline.match(/../g).join(' ');
+  const gattSubscriptionDiagnostics = {
+    currentConnectionCount: 3,
+    maximumEntries: 12,
+    subscriptionSemantics: 'Each value is the latest observed onSubscribe callback for a current connection. Absence means no event was observed; it does not mean Off. Disconnect clears observations.',
+    publicationStatusSemantics: 'Asynchronous connection-scoped NimBLE status only: code 0 is notification TX status, BLE_HS_EDONE is indication acknowledgement, and other nonzero codes are errors. None proves client-application receipt.',
+    lastObservedSubscriptions: [
+      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', cccdValue: '0000', observedAtUptimeMs: 1001, connectionFreshness: 'current'},
+      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', cccdValue: '0003', observedAtUptimeMs: 1002, connectionFreshness: 'current'}
+    ],
+    lastPublicationStatuses: [
+      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', statusCode: 0, statusKind: 'NotificationTx', observedAtUptimeMs: 1101, connectionFreshness: 'current'},
+      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', statusCode: 123, statusKind: 'IndicationAcknowledged', observedAtUptimeMs: 1102, connectionFreshness: 'current'},
+      {connectionId: 'peer-517', peerAddress: peer517.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', statusCode: -99, statusKind: 'Error', observedAtUptimeMs: 1103, connectionFreshness: 'current'}
+    ]
+  };
   assert.equal(indicationBaseline.length / 2, 23);
   context.testStatus = status({connections: [peer23a, peer23b, peer517]});
   vm.runInContext('renderStatus(testStatus)', context);
@@ -632,12 +649,53 @@ async function main() {
     {serviceId: '0000000000000000-00000000', serviceUuid: '12345678-1234-5678-1234-56789abcdef0', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', protectedService: true},
     {serviceId: temporaryServiceId, serviceUuid: '12345678-1234-5678-1234-56789abce100', characteristicUuid: '12345678-1234-5678-1234-56789abce101', protectedService: false}
   ];
-  context.testGatt = {state: 'Ready', valuesAvailable: true, servicesAvailable: true, serviceLimit: 4, services: dynamicServices, values: [
+  context.testGatt = {state: 'Ready', valuesAvailable: true, servicesAvailable: true, serviceLimit: 4, services: dynamicServices,
+    subscriptionDiagnostics: gattSubscriptionDiagnostics, values: [
     { targetId: '0123456789abcdef-00000001', name: 'Original notification', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', notify: true, indicate: false, currentHex: '0102', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
     { targetId: '0123456789abcdef-00000002', name: 'Original indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', notify: false, indicate: true, currentHex: indicationBaseline, maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
-    { targetId: '0123456789abcdef-00000003', name: 'Temperature Scalar', serviceUuid: 'fixture', characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', notify: true, indicate: false, currentHex: 'EB00', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 }
+    { targetId: '0123456789abcdef-00000003', name: 'Temperature Scalar', serviceUuid: 'fixture', characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', notify: true, indicate: false, currentHex: 'EB00', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
+    { targetId: '0123456789abcdef-00000004', name: 'Dual notification and indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', notify: true, indicate: true, currentHex: '010203', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 }
   ] };
   vm.runInContext('renderGatt(testGatt)', context);
+  assert.equal(vm.runInContext('isSubscriptionDiagnostics(testGatt.subscriptionDiagnostics)', context), true,
+    'A complete current diagnostics object is required and accepted');
+  assert.equal(vm.runInContext('isGattSnapshotEnvelope(testGatt)', context), true,
+    'The GATT response envelope requires subscription diagnostics');
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /Connection freshness: 3 current peer/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /CCCD 0000/,
+    'An observed explicit Off callback remains distinguishable from no event');
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /CCCD 0003/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /Notification TX status/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /Indication acknowledgement/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /NimBLE publication error/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /does not mean Off/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /does not prove client-application receipt/);
+  const missingDiagnosticsEnvelope = {...context.testGatt};
+  delete missingDiagnosticsEnvelope.subscriptionDiagnostics;
+  context.missingDiagnosticsEnvelope = missingDiagnosticsEnvelope;
+  assert.equal(vm.runInContext('isGattSnapshotEnvelope(missingDiagnosticsEnvelope)', context), false,
+    'A GATT response without subscriptionDiagnostics is rejected');
+  context.unknownSubscriptionDiagnostics = {...gattSubscriptionDiagnostics,
+    lastObservedSubscriptions: [], lastPublicationStatuses: []};
+  assert.equal(vm.runInContext('isSubscriptionDiagnostics(unknownSubscriptionDiagnostics)', context), true);
+  vm.runInContext('renderGattSubscriptionDiagnostics(unknownSubscriptionDiagnostics)', context);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /no event was observed/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /unknown; it does not mean Off/);
+  assert.doesNotMatch(get('gattSubscriptionDiagnostics').textContent, /CCCD 0000/,
+    'No callback remains unknown and is not rendered as Off');
+  vm.runInContext('renderGattSubscriptionDiagnostics(testGatt.subscriptionDiagnostics)', context);
+  context.invalidSubscriptionDiagnostics = {...gattSubscriptionDiagnostics,
+    lastObservedSubscriptions: [{...gattSubscriptionDiagnostics.lastObservedSubscriptions[0], connectionFreshness: 'stale'}]};
+  assert.equal(vm.runInContext('isSubscriptionDiagnostics(invalidSubscriptionDiagnostics)', context), false,
+    'Disconnected observations cannot be presented as current');
+  context.invalidSubscriptionDiagnostics = {...gattSubscriptionDiagnostics,
+    lastObservedSubscriptions: [{...gattSubscriptionDiagnostics.lastObservedSubscriptions[0], cccdValue: '0004'}]};
+  assert.equal(vm.runInContext('isSubscriptionDiagnostics(invalidSubscriptionDiagnostics)', context), false,
+    'Only observed CCCD values 0000 through 0003 are accepted');
+  context.invalidSubscriptionDiagnostics = {...gattSubscriptionDiagnostics,
+    lastPublicationStatuses: [{...gattSubscriptionDiagnostics.lastPublicationStatuses[0], statusKind: 'Delivered'}]};
+  assert.equal(vm.runInContext('isSubscriptionDiagnostics(invalidSubscriptionDiagnostics)', context), false,
+    'Publication status cannot claim client delivery');
   assert.equal(get('gattHex').value, '01 02');
   assert.equal(get('gattCurrent').textContent, '01 02');
   assert.equal(get('gattRestore'), null);
@@ -655,7 +713,7 @@ async function main() {
   assert.match(get('gattSnapshotStatus').textContent, /Values: stale or unavailable/);
   assert.equal(get('gattHex').value, 'AA BB', 'A transient snapshot failure must preserve edits');
   vm.runInContext("renderGatt({state:'Ready',valuesAvailable:false,values:null,servicesAvailable:false,services:null,serviceLimit:4,reason:'GATT host work is busy'})", context);
-  assert.equal(vm.runInContext('gattValues.length', context), 3, 'Null values preserve the prior collection in memory');
+  assert.equal(vm.runInContext('gattValues.length', context), 4, 'Null values preserve all four prior publication targets in memory');
   assert.match(get('gattInventoryStatus').textContent, /Stale service inventory/);
   assert.equal(get('gattServiceTable').children.length, 1, 'Null inventory keeps the prior rows visibly stale');
   assert.equal(get('gattServiceUuid').value, '', 'Snapshot polling does not overwrite unfinished service input');
@@ -717,14 +775,19 @@ async function main() {
     url: '/api/gatt', body: {op: 'publishValue', targetId: '0123456789abcdef-00000002', hex: indicationBaseline}
   });
   assert.equal(get('gattPublish').disabled, true, 'A queued publish uses the existing worker lock');
+  assert.match(get('feedback').textContent, /Queued:.*operation gatt-op-1/,
+    'The HTTP response reports worker queueing before any operation completion');
+  assert.doesNotMatch(get('feedback').textContent, /Dispatched|delivered|receipt/i,
+    'A queued response does not claim publication or client receipt');
 
   context.testStatus = status({connections: [peer517], lastOperation: {
     operationId: 'gatt-op-1', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched',
-    detail: 'Value stored; publication dispatched. Verify receipt on the BLE client.',
+    detail: 'Value stored; NimBLE accepted/queued the characteristic update request. Peer dispatch and client-application receipt are not proven.',
     data: {storageVerified: true, publicationAttempted: true, publicationDispatched: true}
   }});
   vm.runInContext('renderStatus(testStatus)', context);
-  assert.match(get('feedback').textContent, /Verify receipt/);
+  assert.match(get('lastOperation').textContent, /NimBLE accepted\/queued the characteristic update request/);
+  assert.match(get('lastOperation').textContent, /Peer dispatch and client-application receipt are not proven/);
   context.testGatt.values[1].currentHex = indicationBaseline;
   vm.runInContext('renderGatt(testGatt)', context);
   assert.equal(get('gattHex').value, indicationSpaced);
@@ -823,7 +886,7 @@ async function main() {
   assert.equal(get('gattPublish').disabled, true, 'A queued operation disables Send');
   context.testStatus = status({connections: [peer517], lastOperation: {
     operationId: 'gatt-op-2', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched',
-    detail: 'Value stored; publication dispatched.',
+    detail: 'Value stored; NimBLE accepted/queued the characteristic update request. Peer dispatch and client-application receipt are not proven.',
     data: {storageVerified: true, publicationAttempted: true, publicationDispatched: true}
   }});
   vm.runInContext('renderStatus(testStatus)', context);
@@ -834,7 +897,7 @@ async function main() {
   assert.deepEqual(gattPosts[2].body, {op: 'publishValue', targetId: '0123456789abcdef-00000002', hex: ''});
   context.testStatus = status({connections: [peer517], lastOperation: {
     operationId: 'gatt-op-3', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched',
-    detail: 'Empty value stored and publication dispatched.',
+    detail: 'Empty value stored; NimBLE accepted/queued the characteristic update request. Peer dispatch and client-application receipt are not proven.',
     data: {storageVerified: true, publicationAttempted: true, publicationDispatched: true}
   }});
   vm.runInContext('renderStatus(testStatus)', context);
@@ -897,7 +960,7 @@ async function main() {
   vm.runInContext("shownPollErrors.delete('GATT status');renderGatt(testGatt)", context);
   assert.equal(get('gattAddService').disabled, false, 'Add is enabled with a current inventory and no peers or directed advertising');
   assert.equal(get('gattRemoveService').disabled, false, 'A current temporary service can be selected for removal');
-  assert.equal(vm.runInContext('gattScenarios.length', context), 12, 'All eight existing scenarios and four Dynamic GATT scenarios remain');
+  assert.equal(vm.runInContext('gattScenarios.length', context), 16, 'All existing scenarios remain, with four appended descriptor and subscription scenarios');
   get('gattScenario').value = '9'; get('gattScenario').onchange();
   assert.match(get('gattScenarioInfo').textContent, /click Add service manually/);
   const postsBeforePrefill = gattPosts.length;
@@ -929,6 +992,52 @@ async function main() {
   await vm.runInContext('removeGattService()', context);
   assert.deepEqual(gattPosts.at(-1), {url: '/api/gatt', body: {op: 'removeService', serviceId: temporaryServiceId}});
   vm.runInContext("localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';", context);
+
+  assert.equal(vm.runInContext('gattScenarios.length', context), 16,
+    'All existing scenarios remain, with four appended descriptor and subscription scenarios');
+  const centralScenarios = [
+    ['12', /sole 0x2900/],
+    ['13', /unsigned uint8 value 10/],
+    ['14', /type, units, and bounds as unresolved/]
+  ];
+  const beforeCentralPrefill = {
+    target: get('gattTarget').value,
+    value: get('gattHex').value,
+    serviceUuid: get('gattServiceUuid').value,
+    characteristicUuid: get('gattCharacteristicUuid').value,
+    initialValue: get('gattInitialValueHex').value,
+    removeTarget: get('gattRemoveTarget').value
+  };
+  const postsBeforeCentralPrefill = gattPosts.length;
+  for (const [scenarioId, expectedText] of centralScenarios) {
+    get('gattScenario').value = scenarioId;
+    get('gattScenario').onchange();
+    assert.match(get('gattScenarioInfo').textContent, expectedText);
+    assert.equal(get('gattPrefill').disabled, true,
+      'Central-only descriptor scenarios do not prefill peripheral publication controls');
+    get('gattPrefill').onclick();
+    assert.deepEqual({
+      target: get('gattTarget').value,
+      value: get('gattHex').value,
+      serviceUuid: get('gattServiceUuid').value,
+      characteristicUuid: get('gattCharacteristicUuid').value,
+      initialValue: get('gattInitialValueHex').value,
+      removeTarget: get('gattRemoveTarget').value
+    }, beforeCentralPrefill, 'Selecting or prefilling a central-only scenario leaves every control unchanged');
+    assert.equal(gattPosts.length, postsBeforeCentralPrefill,
+      'Central-only scenario selection and prefill never call the device API');
+  }
+  get('gattScenario').value = '15';
+  get('gattScenario').onchange();
+  assert.match(get('gattScenarioInfo').textContent, /Use the central CCCD/);
+  assert.equal(get('gattPrefill').disabled, false, 'The dual update is a publication scenario and can prefill its matching target');
+  const postsBeforeDualPrefill = gattPosts.length;
+  get('gattPrefill').onclick();
+  assert.equal(get('gattTarget').value, '0123456789abcdef-00000004',
+    'The appended dual Notify+Indicate fixture is the fourth target');
+  assert.equal(get('gattHex').value, '01 02 03', 'Dual fixture prefill selects only its publication bytes');
+  assert.equal(gattPosts.length, postsBeforeDualPrefill,
+    'Selecting and prefilling the dual publication scenario does not write, publish, reset, or mutate a descriptor');
 
   vm.runInContext('gattReadyObserved=false', context);
   vm.runInContext("renderGatt({state:'Ready',valuesAvailable:false,values:null,servicesAvailable:false,services:null,serviceLimit:4,reason:'Fixture is not ready.'})", context);

@@ -38,7 +38,8 @@ DYNAMIC_EXTRACT = {
 FIXTURE_UUID_NAMES = (
     "ServiceUuid", "DescriptorServiceUuid", "ExistingCharacteristicUuid",
     "NotificationCharacteristicUuid", "IndicationCharacteristicUuid",
-    "TemperatureUuid",
+    "TemperatureUuid", "DualUpdateCharacteristicUuid", "WritableDescriptionUuid",
+    "UnsignedRangeUuid", "UnresolvedRangeUuid",
 )
 
 def fail(message: str) -> NoReturn:
@@ -188,7 +189,7 @@ def digest(path: Path) -> str:
 
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
-    original = root.parent / "ble.peripheral"
+    original = Path(os.environ.get("BLE_PERIPHERAL_NATIVE_CACHE_ROOT", root.parent / "ble.peripheral"))
     if not original.is_dir(): fail(f"original dependency checkout missing: {original}")
     packages = [original / ".pio/libdeps" / env / "NimBLE-Arduino" for env in ENVS]
     for package in packages:

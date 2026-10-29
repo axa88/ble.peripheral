@@ -7,7 +7,7 @@
 
 ## Active plans
 
-No active feature plans.
+- [GATT descriptor and subscription fixture plan](Backlog/GattDescriptorSubscriptionFixture/Ble.Peripheral.GattDescriptorSubscriptionFixture.Plan.md)
 
 ## Completed work
 

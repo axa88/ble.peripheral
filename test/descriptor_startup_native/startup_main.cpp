@@ -22,16 +22,32 @@ namespace
 			config.serviceUuid == FixtureGatt::ServiceUuid && config.manufacturerData == manufacturer;
 	}
 
-	bool checkService(bool expectRegistered)
+	bool checkService(bool expectRegistered, bool expectExtendedProperty)
 	{
 		auto* server = NimBLEDevice::getServer();
 		if (!server || server->servicesForTest().size() != 2) return false;
 		auto* service = server->getServiceByUUID(FixtureGatt::ServiceUuid);
-		if (!service || service->characteristicsForTest().size() != 3) return false;
+		if (!service || service->characteristicsForTest().size() != 4) return false;
 		auto* original = service->getCharacteristic(FixtureGatt::ExistingCharacteristicUuid);
 		if (!original || (original->getHandle() != 0) != expectRegistered) return false;
 		const auto value = original->getValue();
-		return std::string(reinterpret_cast<const char*>(value.data()), value.size()) == FixtureGatt::ExistingCharacteristicValue;
+		if (std::string(reinterpret_cast<const char*>(value.data()), value.size()) != FixtureGatt::ExistingCharacteristicValue) return false;
+		auto* dual = service->getCharacteristic(FixtureGatt::DualUpdateCharacteristicUuid);
+		if (!dual || dual->getProperties() != (NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE)) return false;
+		auto* descriptorService = server->getServiceByUUID(FixtureGatt::DescriptorServiceUuid);
+		if (!descriptorService || descriptorService->characteristicsForTest().size() != 10) return false;
+		if (!expectRegistered) return true;
+		auto* writable = descriptorService->getCharacteristic(FixtureGatt::WritableDescriptionUuid);
+		auto* extended = writable ? writable->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2900})) : nullptr;
+		auto* description = writable ? writable->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2901})) : nullptr;
+		std::vector<uint8_t> declaration, nativeExtended;
+		if (!writable || !extended || !description ||
+			!NimBLETest::readCharacteristicDeclaration(writable, declaration) || declaration.size() != 19 ||
+			static_cast<bool>(declaration[0] & BLE_GATT_CHR_PROP_EXTENDED) != expectExtendedProperty ||
+			NimBLETest::attRead(extended->getHandle(), nativeExtended) != NimBLETest::AttResult::Success ||
+			nativeExtended != std::vector<uint8_t>({0x02,0x00}) ||
+			description->getProperties() != (BLE_ATT_F_READ | BLE_ATT_F_WRITE)) return false;
+		return true;
 	}
 }
 
@@ -39,12 +55,14 @@ int main(int argc, char** argv)
 {
 	if (argc != 2) return 2;
 	const std::string scenario = argv[1];
-	if (scenario != "success" && scenario != "registration-failure" && scenario != "finalization-failure") return 2;
+	if (scenario != "success" && scenario != "registration-failure" && scenario != "finalization-failure" &&
+		scenario != "extended-property-failure") return 2;
 
 	StartupTest::reset();
 	auto& controls = NimBLETest::controls();
 	if (scenario == "registration-failure") controls.registrationSucceeds = false;
 	if (scenario == "finalization-failure") controls.postRegistrationFault = NimBLETest::Fault::DescriptionWritePermission;
+	if (scenario == "extended-property-failure") controls.postRegistrationFault = NimBLETest::Fault::CorruptExtendedDeclaration;
 
 	Advertising::InstanceConfig probe;
 	probe.id = 0;
@@ -58,6 +76,7 @@ int main(int argc, char** argv)
 
 	const bool succeeds = scenario == "success";
 	const bool registered = scenario != "registration-failure";
+	const bool expectExtendedProperty = scenario != "extended-property-failure";
 	const char* expectedMode = CONFIG_BT_NIMBLE_EXT_ADV ? "Modern" : "Legacy";
 	const std::string expectedName = std::string(expectedMode) + "-0201";
 	if (!require(manager.initialized_ && manager.deviceName_ == expectedName, "production startup initializes the expected device name")) return 1;
@@ -79,7 +98,7 @@ int main(int argc, char** argv)
 	if (!require(NimBLETest::controls().counters.serverStarts == expectedStartAttempts &&
 		NimBLETest::controls().counters.actualRegistrations == (registered ? 1U : 0U),
 		"server registration is explicit; the extended post-ready apply is an idempotent start attempt")) return 1;
-	if (!require(checkService(registered), "the original fixture service remains present without duplication")) return 1;
+	if (!require(checkService(registered, expectExtendedProperty), "original and appended fixture services retain their startup contract")) return 1;
 	if (!require(StartupTest::state().startCalls == (succeeds ? 1U : 0U) &&
 		StartupTest::state().radioStartCalls == (succeeds ? 1U : 0U), "advertising starts only after successful finalization")) return 1;
 	if (succeeds && !require(StartupTest::state().startSawReady && StartupTest::state().hasStartConfig &&

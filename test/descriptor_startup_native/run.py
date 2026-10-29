@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / ".pio" / "descriptor-fixture" / "native-startup-firmware-id"
 TEST_DIR = Path(__file__).resolve().parent
 ADAPTER_DIR = ROOT / "test" / "descriptor_fixture_native"
+CACHE_ROOT = Path(os.environ.get("BLE_PERIPHERAL_NATIVE_CACHE_ROOT", ROOT))
 
 
 def load_function_body():
@@ -77,7 +78,7 @@ namespace
 
 def find_compiler():
 	candidates = [
-		ROOT / ".pio" / "native-tools" / "winlibs-16.2.0-ucrt-r2" / "mingw64" / "bin" / "g++.exe",
+		CACHE_ROOT / ".pio" / "native-tools" / "winlibs-16.2.0-ucrt-r2" / "mingw64" / "bin" / "g++.exe",
 		Path(shutil.which("g++")) if shutil.which("g++") else None,
 	]
 	for candidate in candidates:
@@ -105,7 +106,7 @@ def main():
 			"-o", str(executable),
 		]
 		subprocess.run(command, cwd=ROOT, env=environment, check=True)
-		for scenario in ("success", "registration-failure", "finalization-failure"):
+		for scenario in ("success", "registration-failure", "finalization-failure", "extended-property-failure"):
 			result = subprocess.run([str(executable), scenario], cwd=ROOT, env=environment,
 				capture_output=True, text=True, check=False)
 			if result.returncode != 0:
@@ -115,7 +116,7 @@ def main():
 			identity_line = "Firmware revision 7 | source 0123456789ab | environment native-startup"
 			if result.stdout.splitlines().count(identity_line) != 1:
 				raise RuntimeError(f"Startup scenario {scenario} did not log the firmware identity exactly once.")
-		print(f"PASS CONFIG_BT_NIMBLE_EXT_ADV={extended}: all three startup scenarios")
+		print(f"PASS CONFIG_BT_NIMBLE_EXT_ADV={extended}: all four startup scenarios")
 
 	print("Native-only startup harness passed; this does not validate radio behavior or hardware acceptance.")
 

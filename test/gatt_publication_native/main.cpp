@@ -9,7 +9,7 @@ extern bool nativeReady;
 extern NimBLEServer* fixtureServer;
 WebResult nativePublish(const std::vector<uint8_t>& bytes, ConnectionId id = {99, 2});
 WebResult nativeSnapshot();
-void nativeEntries(NimBLECharacteristic*, NimBLECharacteristic*, NimBLECharacteristic*);
+void nativeEntries(NimBLECharacteristic*, NimBLECharacteristic*, NimBLECharacteristic*, NimBLECharacteristic*);
 }
 
 int main()
@@ -21,16 +21,18 @@ int main()
 		++passed; return true;
 	};
 	NimBLEServer server;
-	NimBLECharacteristic notification, indication, temperature;
+	NimBLECharacteristic notification, indication, temperature, dual;
 	indication.properties = NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::INDICATE;
-	nativeEntries(&notification, &indication, &temperature);
+	dual.properties = NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE;
+	nativeEntries(&notification, &indication, &temperature, &dual);
 	fixtureServer = &server;
 	const std::string original = "Indicate Characteristic";
 	const std::vector<uint8_t> originalBytes(original.begin(), original.end());
 	server.mtus = {23};
 	auto result = nativePublish({0xAA});
 	if (!check(result.outcome == Outcome::Dispatched && indication.indications == 1 &&
-		indication.value.bytes == std::vector<uint8_t>{0xAA}, "one byte sends at MTU 23")) return 1;
+		indication.receivedIndications.empty() && indication.value.bytes == std::vector<uint8_t>{0xAA},
+		"one byte is stored and NimBLE accepts the update request at MTU 23 with no CCCD subscriber")) return 1;
 	result = nativePublish(originalBytes);
 	if (!check(result.outcome == Outcome::InvalidArgument && indication.indications == 1 &&
 		indication.value.bytes == std::vector<uint8_t>{0xAA}, "23 bytes rejected before storage/publication at MTU 23")) return 1;
@@ -47,7 +49,7 @@ int main()
 	if (!check(result.outcome == Outcome::InvalidArgument && indication.indications == 2 &&
 		result.detail.find("20 bytes") != std::string::npos, "smallest connected peer constrains publication")) return 1;
 	result = nativeSnapshot();
-	if (!check(result.values.size() == 3 && result.values[1].minimumPeerMtu == 23 &&
+	if (!check(result.values.size() == 4 && result.values[1].minimumPeerMtu == 23 &&
 		result.values[1].connectedPeerCount == 2 && result.values[1].publicationLimit == 20,
 		"snapshot reports the same authoritative peer count/MTU and bound")) return 1;
 	server.mtus.clear();
@@ -77,6 +79,42 @@ int main()
 	indication.dispatchSucceeds = true;
 	result = nativePublish({});
 	if (!check(result.outcome == Outcome::Dispatched && indication.value.bytes.empty(), "empty publication remains supported")) return 1;
+
+	server.mtus = {517};
+	dual.cccd = {0x0000};
+	result = nativePublish({0xD0}, {99, 4});
+	if (!check(result.outcome == Outcome::Dispatched && result.publicationAttempted && result.publicationDispatched &&
+		dual.notifications == 1 && dual.receivedNotifications.empty() && dual.receivedIndications.empty() &&
+		dual.value.bytes == std::vector<uint8_t>{0xD0} &&
+		result.detail.find("Peer dispatch and client-application receipt are not proven") != std::string::npos,
+		"dual-property publication may be accepted while CCCD is Off, with no peer update")) return 1;
+
+	dual.receivedNotifications.clear(); dual.receivedIndications.clear(); dual.cccd = {0x0001};
+	result = nativePublish({0xD1}, {99, 4});
+	if (!check(result.outcome == Outcome::Dispatched && dual.notifications == 2 &&
+		dual.receivedNotifications == std::vector<size_t>{0} && dual.receivedIndications.empty(),
+		"Notify CCCD routes the dual characteristic update as a notification")) return 1;
+
+	dual.receivedNotifications.clear(); dual.receivedIndications.clear(); dual.cccd = {0x0002};
+	result = nativePublish({0xD2}, {99, 4});
+	if (!check(result.outcome == Outcome::Dispatched && dual.notifications == 3 && dual.indications == 0 &&
+		dual.receivedNotifications.empty() && dual.receivedIndications == std::vector<size_t>{0},
+		"Indicate CCCD routes the same notify() update request as an indication")) return 1;
+
+	dual.receivedNotifications.clear(); dual.receivedIndications.clear();
+	server.mtus = {517, 517}; dual.cccd = {0x0001, 0x0002};
+	result = nativePublish({0xD3}, {99, 4});
+	if (!check(result.outcome == Outcome::Dispatched &&
+		dual.receivedNotifications == std::vector<size_t>{0} && dual.receivedIndications == std::vector<size_t>{1},
+		"per-peer CCCD values choose notification and indication kinds independently")) return 1;
+
+	dual.receivedNotifications.clear(); dual.receivedIndications.clear();
+	server.mtus = {517}; dual.cccd = {0x0003};
+	result = nativePublish({0xD4}, {99, 4});
+	if (!check(result.outcome == Outcome::Dispatched &&
+		dual.receivedNotifications == std::vector<size_t>{0} && dual.receivedIndications.empty(),
+		"combined CCCD selects notification first under the pinned NimBLE update scheduler")) return 1;
+
 	nativeReady = false;
 	result = nativePublish({0xDD});
 	if (!check(result.outcome == Outcome::NotReady && indication.value.bytes.empty(), "readiness blocks mutation")) return 1;
