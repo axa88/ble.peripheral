@@ -1,0 +1,168 @@
+#include <array>
+#include <cstdint>
+#include <iostream>
+#include <string>
+#include <string_view>
+#include <vector>
+namespace GattValue { constexpr size_t MaxWebLength = 256; }
+namespace FixtureGatt { @@FIXTURE_UUIDS@@ }
+
+class NimBLEUUID {
+public:
+    explicit NimBLEUUID(const char* s) : value_(s) {}
+    explicit NimBLEUUID(const std::string& s) : value_(s) {}
+    friend bool operator==(const NimBLEUUID& a, const NimBLEUUID& b) { return a.value_ == b.value_; }
+private:
+    std::string value_;
+};
+class NimBLECharacteristic {
+public:
+    explicit NimBLECharacteristic(const char* s) : uuid_(s) {}
+    NimBLEUUID getUUID() const { return NimBLEUUID(uuid_); }
+private:
+    std::string uuid_;
+};
+class NimBLEService {
+public:
+    NimBLEService(uint16_t h, const char* s) : handle_(h), uuid_(s) {}
+    uint16_t getHandle() const { return handle_; }
+    NimBLEUUID getUUID() const { return NimBLEUUID(uuid_); }
+    const std::vector<NimBLECharacteristic*>& getCharacteristics() const { return chars_; }
+    void addCharacteristic(NimBLECharacteristic* c) { chars_.push_back(c); }
+    void clearCharacteristics() { chars_.clear(); }
+private:
+    uint16_t handle_;
+    std::string uuid_;
+    std::vector<NimBLECharacteristic*> chars_;
+};
+class NimBLEServer {
+public:
+    std::vector<NimBLEService*> m_svcVec;
+    NimBLEService* getServiceByUUID(const NimBLEUUID& id) const {
+        for (auto* svc : m_svcVec) if (svc && svc->getUUID() == id) return svc;
+        return nullptr;
+    }
+    NimBLEService* getServiceByUUID(const char* id) const {
+        return getServiceByUUID(NimBLEUUID(id));
+    }
+};
+
+namespace DynamicGatt {
+enum class Outcome { Applied, Failed, InvalidArgument };
+struct Result { Outcome outcome; std::string detail, errorCode; };
+inline constexpr size_t ServiceLimit = 4;
+struct Managed {
+    std::string serviceUuid, characteristicUuid;
+    NimBLEService* service = nullptr;
+};
+static std::array<Managed, ServiceLimit> managed{};
+static uint32_t sequence = 0;
+static NimBLEServer* activeServer = nullptr;
+NimBLEServer* server() { return activeServer; }
+
+@@CANONICAL_UUID@@
+
+namespace {
+@@PROTECTED_SERVICES@@
+@@PROTECTED_UUID@@
+@@VALIDATE_ADD@@
+}
+Result TestValidateAdd(std::string_view a, std::string_view b, size_t length,
+                       std::string& svc, std::string& chr) {
+    return validateAdd(a, b, length, svc, chr);
+}
+}
+
+static int checks=0, failures=0;
+static void check(bool ok, const char* label) {
+    ++checks; std::cout<<(ok?"PASS ":"FAIL ")<<label<<"\n"; if(!ok) ++failures;
+}
+static constexpr char Svc[]="aaaaaaaa-1111-2222-3333-444444444440";
+static constexpr char Chr[]="aaaaaaaa-1111-2222-3333-444444444441";
+static constexpr char Svc2[]="bbbbbbbb-1111-2222-3333-444444444440";
+static constexpr char Chr2[]="bbbbbbbb-1111-2222-3333-444444444441";
+static NimBLEServer nativeServer;
+static NimBLEService fixture(1,FixtureGatt::ServiceUuid);
+static NimBLEService descriptorFixture(2,FixtureGatt::DescriptorServiceUuid);
+static NimBLECharacteristic existing(FixtureGatt::ExistingCharacteristicUuid);
+static NimBLECharacteristic notify(FixtureGatt::NotificationCharacteristicUuid);
+static NimBLECharacteristic indicate(FixtureGatt::IndicationCharacteristicUuid);
+static NimBLECharacteristic temperature(FixtureGatt::TemperatureUuid);
+static NimBLEService managedService(3,Svc);
+
+static void setup() {
+    nativeServer.m_svcVec.clear();
+    fixture.clearCharacteristics(); descriptorFixture.clearCharacteristics();
+    fixture.addCharacteristic(&existing); fixture.addCharacteristic(&notify);
+    fixture.addCharacteristic(&indicate); descriptorFixture.addCharacteristic(&temperature);
+    nativeServer.m_svcVec.push_back(&fixture); nativeServer.m_svcVec.push_back(&descriptorFixture);
+    DynamicGatt::activeServer=&nativeServer; DynamicGatt::sequence=0;
+    for(auto& m:DynamicGatt::managed) m=DynamicGatt::Managed{};
+}
+static DynamicGatt::Result add(const char* s,const char* c,size_t n,std::string& so,std::string& co) {
+    return DynamicGatt::TestValidateAdd(s,c,n,so,co);
+}
+static void testCanonical() {
+    std::string n;
+    check(DynamicGatt::CanonicalUuid(Svc,n)&&n==Svc,"canonical lowercase UUID accepted");
+    check(DynamicGatt::CanonicalUuid("AAAAAAAA-1111-2222-3333-444444444440",n)&&n==Svc,
+          "canonical UUID lowercases hex");
+    check(!DynamicGatt::CanonicalUuid("1234",n),"short UUID rejected");
+    check(!DynamicGatt::CanonicalUuid("aaaaaaaa111122223333444444444440",n),"missing hyphens rejected");
+    check(!DynamicGatt::CanonicalUuid("aaaaaaaa-1111-2222-3333-44444444444g",n),"non-hex rejected");
+    check(!DynamicGatt::CanonicalUuid("0000180D-0000-1000-8000-00805F9B34FB",n),"16-bit base alias rejected");
+    check(!DynamicGatt::CanonicalUuid("12345678-0000-1000-8000-00805F9B34FB",n),"32-bit base alias rejected");
+}
+static void testLimitsAndIdentity() {
+    setup(); std::string s,c;
+    auto ok=add("AAAAAAAA-1111-2222-3333-444444444440","AAAAAAAA-1111-2222-3333-444444444441",256,s,c);
+    check(ok.outcome==DynamicGatt::Outcome::Applied&&s==Svc&&c==Chr,"256-byte add accepted and UUIDs normalized");
+    check(add(Svc,Chr,257,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"257-byte add rejected");
+    check(add("bad",Chr,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"malformed add rejected");
+    check(add(Svc,Svc,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"service/characteristic equality rejected");
+}
+static void testProtectedUuidDerivation() {
+    setup(); std::string s,c;
+    check(add(FixtureGatt::ServiceUuid,Chr,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "fixture service UUID derived from native server is protected");
+    check(add(Svc,FixtureGatt::ExistingCharacteristicUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "fixture read characteristic UUID is protected");
+    check(add(Svc,FixtureGatt::NotificationCharacteristicUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "fixture notification UUID is protected");
+    check(add(Svc,FixtureGatt::IndicationCharacteristicUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "fixture indication UUID is protected");
+    check(add(FixtureGatt::DescriptorServiceUuid,Chr,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "descriptor fixture service UUID is protected");
+    check(add(Svc,FixtureGatt::TemperatureUuid,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,
+          "descriptor fixture characteristic UUID is protected");
+}
+static void testDuplicatesCapacityOverflow() {
+    setup(); std::string s,c;
+    NimBLEService nativeDuplicate(10,Svc); nativeServer.m_svcVec.push_back(&nativeDuplicate);
+    check(add(Svc,Chr,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"native service duplicate rejected");
+
+    setup(); DynamicGatt::managed[0].service=&managedService;
+    DynamicGatt::managed[0].serviceUuid=Svc; DynamicGatt::managed[0].characteristicUuid=Chr;
+    check(add(Svc,Chr2,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"managed service duplicate rejected");
+    check(add(Svc2,Chr,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"managed characteristic duplicate rejected");
+    check(add(Svc2,Svc,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"cross-field collision rejected");
+
+    setup();
+    static NimBLEService slots[4]={{11,"cccccccc-1111-2222-3333-444444444440"},
+      {12,"cccccccc-1111-2222-3333-444444444441"},{13,"cccccccc-1111-2222-3333-444444444442"},
+      {14,"cccccccc-1111-2222-3333-444444444443"}};
+    const char* svcs[4]={"cccccccc-1111-2222-3333-444444444440","cccccccc-1111-2222-3333-444444444441",
+      "cccccccc-1111-2222-3333-444444444442","cccccccc-1111-2222-3333-444444444443"};
+    for(size_t i=0;i<4;++i){DynamicGatt::managed[i].service=&slots[i];DynamicGatt::managed[i].serviceUuid=svcs[i];}
+    check(add(Svc,Chr,0,s,c).outcome==DynamicGatt::Outcome::InvalidArgument,"four-service capacity enforced");
+
+    setup(); DynamicGatt::sequence=UINT32_MAX;
+    auto exhausted=add(Svc,Chr,0,s,c);
+    check(exhausted.outcome==DynamicGatt::Outcome::Failed&&exhausted.errorCode=="service_id_exhausted",
+          "service identifier overflow rejected");
+}
+int main() {
+    testCanonical(); testLimitsAndIdentity(); testProtectedUuidDerivation(); testDuplicatesCapacityOverflow();
+    std::cout<<checks-failures<<"/"<<checks<<" checks passed\n";
+    return failures?1:0;
+}

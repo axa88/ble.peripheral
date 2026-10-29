@@ -1,5 +1,6 @@
 // BluetoothManager.cpp
 #include "BluetoothManager.h"
+#include "dynamicGatt.h"
 #include "fixtureGatt.h"
 #include "firmwareIdentity.h"
 #include <Arduino.h>
@@ -420,6 +421,12 @@ BluetoothManager::Outcome BluetoothManager::DisconnectAll()
 }
 
 NimBLEServer* BluetoothManager::Server() const noexcept { return server_; }
+bool BluetoothManager::SendServiceChangedIndication()
+{
+    if (!server_ || !DynamicGatt::Ready()) return false;
+    server_->sendServiceChangedIndication();
+    return true;
+}
 
 uint8_t BluetoothManager::Capabilities(std::optional<uint8_t> capabilities) noexcept
 {

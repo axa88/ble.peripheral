@@ -117,16 +117,21 @@ fields, including the minimum connected-peer MTU and peer count, plus hex values
 Status-envelope fixtures require a numeric firmware revision, a full 64-character
 hex source ID, and a nonempty environment string; malformed or wrongly typed
 identity values are rejected.
-The cJSON hook injects failure at every allocation observed in this fixture
-(91 in the current run; the count is discovered dynamically) and proves the
-known-bad variant can return an incomplete HTTP 200. Explicit snapshot `Failed`
-maps to 500 while `Busy` and `NotReady` remain 409. A source guard verifies the
-GATT route only accepts `publishValue`. It does not run production
-`GetValues()`, the full `makeStatus` snapshot producer, live HTTP
-routes/authentication, or device BLE behavior. Generated native artifacts are retained under
-`.pio/web-status/native`. When invoked by the validation matrix, the runner's
-stdout and stderr are captured in the unique run directory; a direct invocation
-does not write a separate log file. Run it directly with:
+
+The cJSON hook injects failure at each allocation observed in the fixture and
+displays the discovered allocation count for that run. Explicit snapshot `Failed`
+returns HTTP 500. `Busy` and `NotReady` return HTTP 200 with
+`valuesAvailable:false` and a null `values` field; unavailable service inventory
+is also represented as null. The GATT route accepts `publishValue`, `addService`,
+`removeService`, and `sendServiceChanged`; other routes are unchanged. The harness
+does not run production `GetValues()`, the full `makeStatus` snapshot producer,
+live HTTP routes or authentication, or device BLE behavior. Generated native
+artifacts are retained under `.pio/web-status/native`. When invoked by the
+validation matrix, the runner's stdout and stderr are captured in the unique run
+directory; a direct invocation does not write a separate log file. Run it directly
+with:
+
+Run it directly with:
 
 ```powershell
 python test/web_status_native/run.py
@@ -164,3 +169,54 @@ peer MTU and cap explanations, scenario prefill, no-peer and stale-snapshot
 messages, and removal of the Restore action in a Node DOM stub. It does not test
 browser layout, live device HTTP/security behavior, central descriptor
 operations, or actual subscription delivery.
+
+## Dynamic GATT rebuild feasibility harness
+
+Run from the feature branch root:
+
+~~~
+python test/dynamic_gatt_native/run.py
+python test/dynamic_entry_native/run.py
+python test/dynamic_recovery_native/run.py
+python test/dynamic_topology_native/run.py
+python test/dynamic_advertising_native/run.py
+~~~
+
+The runner reads NimBLE-Arduino 2.5.1 from the original repository's C3 and WROVER
+PlatformIO dependency trees, checks installed versions and source hashes, extracts
+the pinned ATT reset, GATT count/reset/stop and visibility functions plus the server
+remove wrapper, and compiles those bodies with production `src/gattRebuild.h`.
+It checks mutation-before-reset ordering, ATT-list clearing while the pool is live,
+capacity clearing on stop, and 128 rebuild cycles bounded by current topology. It
+injects precondition, remove, reset, count, allocation, registration, and verification
+failures. A second executable compiles and runs the exact pinned `addService` and
+`start` bodies: a nonremoved service is appended without marking GATT changed, then
+`start()` returns true without resetting or registering it. The same executable
+checks that re-adding a removed service takes the reset-and-register path. The runner
+also compiles the extracted production UUID normalization, protected-identity, and
+add-input validation bodies against fixture UUIDs from `src/fixtureGatt.h`.
+
+The lifecycle adapter supplies mutability, allocation, registration, and lookup
+stubs rather than the full NimBLEServer start/resetGATT dependency path. The separate
+wrapper executable uses reset and registration stubs around the extracted wrapper
+bodies. These are deterministic source-level feasibility checks, not proof of live
+multi-task safety or physical device behavior. Host-event serialization, application
+exclusion, bonded CCCD handle
+checks, and device-reported revision/fingerprint acceptance remain separate gates.
+Generated compiler inputs and executables are retained under
+`.pio/dynamic-gatt-native/<run-id>`.
+
+The entry runner executes production entry leasing, fixture readiness/CAS admission,
+and queued-host cancellation/lifetime code. The recovery runner executes the
+production structural transaction and lifecycle adapter with injected unchanged,
+uncertain, registration, verification, and restoration outcomes. The advertising
+runner compiles production capture/restore, stop, timer, deferred callback, and
+serial admission bodies in both legacy and extended configurations. It exercises
+host truth, inactive configurations, pending restart intent/generations, timer
+allocation/start failures, stale callback replay, D/S exclusion, Q/W availability,
+and buffered advertising submission. These constrained adapters do not establish
+live radio behavior or hardware task-stack headroom.
+
+The topology runner executes the production fixture identity capture/verification
+against native lookup adapters, including GAP, Service Changed, every fixture CCCD,
+characteristic values, descriptor metadata, ownership, and missing/moved handles.

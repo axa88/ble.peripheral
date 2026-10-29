@@ -30,6 +30,9 @@ namespace FixtureGatt
 
 	NimBLECharacteristic* Create(NimBLEServer& server);
 	bool Finalize();
+	// Caller owns DynamicGatt entry; refuse to invalidate while a host job is queued/running.
+	bool BeginRebuild();
+	bool FinalizeAfterRebuild();
 	bool Ready();
 
 #if BLE_ENABLE_WEB_INTERFACE

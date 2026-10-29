@@ -1,4 +1,5 @@
 #include "fixtureGatt.h"
+#include "dynamicGatt.h"
 #include <Arduino.h>
 #include <algorithm>
 #include <array>
@@ -186,11 +187,14 @@ namespace FixtureGatt
 
 		WebResult runHost(Work work, ConnectionId id, const GattValue::Buffer& bytes, size_t length)
 		{
-			if (!Ready()) return {Outcome::NotReady, "GATT fixture is not ready."};
+			{
+			DynamicGatt::Entry entry;
+			if (!entry || !Ready()) return {Outcome::NotReady, "GATT fixture is not ready."};
 			if (length > bytes.size()) return {Outcome::InvalidArgument, "Value exceeds the Web payload limit."};
 			bool expected = false;
 			if (!hostWorkPending.compare_exchange_strong(expected, true))
 				return {Outcome::Busy, "GATT host work is pending; retry after refreshing."};
+			}
 			auto job = std::make_shared<HostJob>();
 			if (!job->done)
 			{
@@ -324,7 +328,7 @@ namespace FixtureGatt
 
 	bool Ready() { return ready.load(); }
 
-	bool Finalize()
+	bool finalize(bool initialSeeds)
 	{
 		if (Ready()) return true;
 		if (!fixtureServer || !aggregate || !range) return false;
@@ -342,9 +346,9 @@ namespace FixtureGatt
 				descriptions[i]->getCharacteristic() != fixtures[i] || descriptions[i]->getProperties() != BLE_ATT_F_READ ||
 				descriptions[i]->getValue().max_size() != std::strlen(names[i]) ||
 				!equals(descriptions[i], reinterpret_cast<const uint8_t*>(names[i]), std::strlen(names[i]))) return false;
-			if (i < 5 && !equals(fixtures[i], scalarValue, sizeof(scalarValue))) return false;
-			if (i == 5 && !equals(fixtures[i], aggregateValue, sizeof(aggregateValue))) return false;
-			if (i == 6 && fixtures[i]->getLength() != 0) return false;
+			if (initialSeeds && i < 5 && !equals(fixtures[i], scalarValue, sizeof(scalarValue))) return false;
+			if (initialSeeds && i == 5 && !equals(fixtures[i], aggregateValue, sizeof(aggregateValue))) return false;
+			if (initialSeeds && i == 6 && fixtures[i]->getLength() != 0) return false;
 			if (i < formats.size())
 			{
 				const uint8_t expected[] = {static_cast<uint8_t>(i < 5 ? 0x0E : 0x04), static_cast<uint8_t>(i < 5 ? exponents[i] : 0),
@@ -368,6 +372,18 @@ namespace FixtureGatt
 		ready.store(true);
 		return true;
 	}
+
+    bool Finalize() { return finalize(true); }
+    bool BeginRebuild()
+    {
+#if BLE_ENABLE_WEB_INTERFACE
+        if (hostWorkPending.load()) return false;
+#endif
+        if (!Ready()) return false;
+        ready.store(false);
+        return true;
+    }
+    bool FinalizeAfterRebuild() { return finalize(false); }
 
 #if BLE_ENABLE_WEB_INTERFACE
 	WebResult GetValues() { return runHost(Work::Snapshot, {}, {}, 0); }

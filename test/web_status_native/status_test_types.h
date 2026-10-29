@@ -52,6 +52,28 @@ namespace FixtureGatt
 	WebResult GetValues();
 }
 
+namespace DynamicGatt
+{
+	enum class State { Ready, Applying, RecoveryRequired };
+	inline constexpr size_t ServiceLimit = 4;
+	struct ServiceSnapshot
+	{
+		ConnectionId id{};
+		std::string serviceUuid;
+		std::string characteristicUuid;
+		bool protectedService = false;
+	};
+	struct Inventory
+	{
+		State state = State::Ready;
+		bool available = true;
+		std::vector<ServiceSnapshot> services;
+		std::string reason;
+	};
+	Inventory GetInventory();
+	bool Ready();
+}
+
 namespace Advertising
 {
 	struct InstanceConfig {};
@@ -92,7 +114,10 @@ enum class WorkerOperation
 	RequestPhy,
 	ReadPeerLink,
 	SetPreferredMtu,
-	PublishValue
+	PublishValue,
+	AddService,
+	RemoveService,
+	SendServiceChanged
 };
 
 enum class SlotState { Empty, Queued, Running, Done };
@@ -163,6 +188,8 @@ namespace WebStatusTest
 
 	extern MakeStatusMode makeStatusMode;
 	extern GattSnapshotMode gattSnapshotMode;
+	extern DynamicGatt::Inventory gattInventory;
+	extern bool dynamicGattReady;
 	extern const WorkerRecord* currentOperation;
 	extern ResponseCapture response;
 	void armAllocationFailure(size_t ordinal);

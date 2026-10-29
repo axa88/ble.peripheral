@@ -45,6 +45,19 @@
 <label>Value to publish (hex; empty allowed)<input id="gattHex" type="text" maxlength="1024" autocomplete="off" spellcheck="false" style="width:100%"></label>
 <p id="gattDraftStatus" role="status" aria-live="polite">Draft unavailable. Select a current target to enable Send.</p>
 <button id="gattPublish" data-worker-action disabled>Send value</button>
+<hr>
+<h3>Temporary services</h3>
+<p id="gattSnapshotStatus" class="muted" role="status" aria-live="polite">Waiting for GATT lifecycle and inventory.</p>
+<p id="gattInventoryStatus" class="muted" aria-live="polite"></p><div id="gattServiceTable"></div>
+<div class="row">
+<label>Service UUID<input id="gattServiceUuid" type="text" maxlength="36" autocomplete="off" spellcheck="false"></label>
+<label>Characteristic UUID<input id="gattCharacteristicUuid" type="text" maxlength="36" autocomplete="off" spellcheck="false"></label>
+</div>
+<label>Initial value (hex; empty allowed)<input id="gattInitialValueHex" type="text" maxlength="1024" autocomplete="off" spellcheck="false" style="width:100%"></label>
+<div class="row"><button id="gattAddService" data-worker-action disabled>Add service</button></div>
+<label>Temporary service to remove<select id="gattRemoveTarget"></select></label>
+<div class="row"><button id="gattRemoveService" data-worker-action disabled>Remove service</button><button id="gattSendServiceChanged" data-worker-action disabled>Send Service Changed</button></div>
+<p class="muted">Temporary services are volatile and do not change advertising. Disconnect every peer before adding or removing a service. Service Changed can be dispatched while connected; the status reports server dispatch, not client receipt or acknowledgement.</p>
 <p class="muted">Send stores the value and requests delivery to subscribers. Verify receipt on the BLE client; a reported send does not prove receipt or indication acknowledgement. Every connected peer, including unsubscribed peers, bounds the publication limit. With no connected peers, Send changes the stored value and nobody can receive an update. ATT carries up to three fewer value bytes than the negotiated MTU. Selections and scenario prefill do not change the device.</p>
 </section>
 <section class="wide"><details class="section-disclosure"><summary>GATT Test Scenarios</summary>
@@ -64,7 +77,7 @@ const element=(tag,text)=>{const node=document.createElement(tag);if(text!==unde
 let status=null,csrf='',polling=false,lastPeer='',lastAdvSelection='',lastVisibleOperationId='',lastSeenWorkerOperationId='';
 let localWorkerBusy=false,localPendingOperationId='',localPreviousOperationId='';
 let restartPolicyPending=null;
-let gattValues=[],lastGattSelection='',gattAvailable=false;
+let gattValues=[],gattServices=[],lastGattSelection='',gattAvailable=false,gattServicesAvailable=false,gattReadyObserved=false,gattState='',gattReason='',gattServiceLimit=4,statusAvailable=false;
 const fixtureUuid=suffix=>'12345678-1234-5678-1234-56789abc'+suffix;
 const scalarFixtures=[['df01','Exponent Zero','00','235'],['df02','Exponent Positive','7F','235 x 10^127'],['df03','Exponent Negative Minimum','80','235 x 10^-128'],['df04','Exponent Negative Two','FE','2.35'],['df05','Temperature Scalar','FF','23.5']];
 const gattScenarios=[
@@ -75,7 +88,11 @@ const gattScenarios=[
  {name:'Descriptor absence',text:()=> 'Central only: discover '+fixtureUuid('def1')+' (readable original value) and '+fixtureUuid('df07')+' (WRITE-only trigger): neither has 0x2904 or 0x2905; trigger has 0x2901 but original has none. '+fixtureUuid('df01')+' has 0x2901 and 0x2904 but no 0x2906. Pass: exact absence on the correct parents; never borrow neighboring metadata.'},
  {name:'Temperature read and update',suffix:'df05',hex:'F5 00',text:()=> 'Target '+fixtureUuid('df05')+'. At a fresh boot, central READ returns EB 00 (23.5 degrees Celsius). Subscribe, then WRITE acknowledged 01 to '+fixtureUuid('df07')+': update retains current bytes. Alternatively fill controls and Send notification with F5 00: pass if read and received bytes equal F5 00 (24.5 degrees Celsius). Unsubscribe and trigger again: no receipt. Other accepted trigger bytes do not publish; invalid ATT lengths may be rejected.'},
  {name:'Original notification',suffix:'def2',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def2')+'. At a fresh boot, read ASCII Notify Characteristic before publication. Subscribe via the central, fill controls and Send notification. Pass: received update and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Reboot for the original value. Generic publication is not a central ATT write and does not invoke the original trigger callback.'},
- {name:'Original indication',suffix:'def3',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def3')+'. At a fresh boot, read ASCII Indicate Characteristic before publication. Subscribe for indications via the central, fill controls and Send indication. Pass: received indication and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Verify client acknowledgement separately from server dispatch. Reboot for the original value.'}
+ {name:'Original indication',suffix:'def3',hex:'01 02 03',text:()=> 'Target '+fixtureUuid('def3')+'. At a fresh boot, read ASCII Indicate Characteristic before publication. Subscribe for indications via the central, fill controls and Send indication. Pass: received indication and subsequent READ equal 01 02 03; a connected unsubscribed peer receives nothing. Verify client acknowledgement separately from server dispatch. Reboot for the original value.'},
+ {name:'Manual indication while connected',kind:'manual',text:()=> 'Keep a BLE central connected and invoke Send Service Changed. Pass: the device reports Dispatched. Separately record whether the client or operating system observed the event and explicitly rediscovered services; dispatch does not prove radio delivery, receipt, or acknowledgement. This operation does not change the database.'},
+ {name:'Add then reconnect and discover',kind:'add',serviceUuid:'12345678-1234-5678-1234-56789abce100',characteristicUuid:'12345678-1234-5678-1234-56789abce101',valueHex:'01 02',text:()=> 'Use Fill GATT Controls, then click Add service manually. Disconnect, reconnect, explicitly rediscover, and verify the new service UUID, characteristic UUID, and initial value. Record the device operation result separately from central discovery.'},
+ {name:'Remove then reconnect and discover',kind:'remove',text:()=> 'Use Fill GATT Controls to select a current temporary service, then click Remove service manually. Disconnect, reconnect, explicitly rediscover, and verify that service is absent. Protected fixture services cannot be removed.'},
+ {name:'Bonded cache behavior',kind:'add',serviceUuid:'12345678-1234-5678-1234-56789abce102',characteristicUuid:'12345678-1234-5678-1234-56789abce103',valueHex:'A1',text:()=> 'Use an already bonded central. With it disconnected, add a temporary service using the filled controls or remove a temporary service. Reconnect and compare the cached topology with explicit service rediscovery. Confirm existing fixture descriptors and subscriptions remain valid. Do not delete bonds; record any Service Changed event separately from the firmware operation result.'}
 ];
 const pairNodes=new Map();
 const submittedFields=new Map();
@@ -87,9 +104,10 @@ const operationLabels={
  setCapabilities:'Set pairing I/O',setAuthentication:'Set security flag',setKeyDistribution:'Set key distribution',
  deleteConnection:'Delete bond',deleteAll:'Delete all bonds',disconnect:'Disconnect peer',disconnectAll:'Disconnect all peers',
  readPeerLink:'Read peer link',requestPhy:'Request PHY',setDataLength:'Request data length',setConnectionParameters:'Request connection parameters',
- setPreferred:'Set preferred MTU',enterPasskey:'Submit passkey',confirm:'Submit numeric confirmation',publishValue:'Publish GATT value'
+ setPreferred:'Set preferred MTU',enterPasskey:'Submit passkey',confirm:'Submit numeric confirmation',publishValue:'Publish GATT value',
+ addService:'Add temporary GATT service',removeService:'Remove temporary GATT service',sendServiceChanged:'Send Service Changed indication'
 };
-const supportedFailureResults=new Set(['Failed','InvalidArgument','Unsupported','Busy']);
+const supportedFailureResults=new Set(['Failed','InvalidArgument','Unsupported','Busy','NotReady']);
 const number=id=>{const field=$(id);if(!field.checkValidity()||!Number.isInteger(Number(field.value))||field.value==='')throw Error('Enter a valid '+id+' value.');return Number(field.value);};
 function selectedAdv(){if(!$('adv').value)throw Error('Select an advertising instance.');return Number($('adv').value);}
 function selectedPeer(){if(!$('peer').value)throw Error('Select a connected peer.');return $('peer').value;}
@@ -232,6 +250,7 @@ function renderTable(hostId,headers,rows){
 }
 function spacedHex(text){return (String(text).match(/../g)||[]).join(' ');}
 function selectedGatt(){return gattAvailable?gattValues.find(item=>item.targetId===$('gattTarget').value):undefined;}
+function selectedGattForDisplay(){return gattValues.find(item=>item.targetId===$('gattTarget').value);}
 function firmwareIdentityText(device){
  const revision=device&&device.firmwareRevision,environment=device&&device.firmwareEnvironment,source=String(device&&device.firmwareSource||'');
  if(!Number.isInteger(revision)||revision<0||revision>4294967295||typeof environment!=='string'||!environment||!/^[0-9a-f]{64}$/i.test(source))return 'Firmware version unavailable';
@@ -333,31 +352,147 @@ function updateGattDraft(item=selectedGatt()){
  return false;
 }
 function renderGattSelection(){
- const item=selectedGatt(),changed=lastGattSelection!==$('gattTarget').value;
+ const item=selectedGattForDisplay(),changed=lastGattSelection!==$('gattTarget').value;
  if(changed){lastGattSelection=$('gattTarget').value;$('gattHex').dataset.dirty='false';$('gattHex').dataset.editVersion=String((Number($('gattHex').dataset.editVersion)||0)+1);}
  $('gattIdentity').textContent=item?'Service: '+item.serviceUuid+'\r\nCharacteristic: '+item.characteristicUuid+'\r\nInstance: '+item.targetId+'\r\nProperties: READ'+(item.characteristicUuid===fixtureUuid('df05')?'':' | WRITE')+(item.notify?' | NOTIFY':' | INDICATE'):'';
  $('gattCurrent').textContent=item?(spacedHex(item.currentHex)||'(empty)'):'Unavailable';
  $('gattLimit').textContent=item?gattPublicationContext(item):'';
  $('gattPublish').textContent=item&&item.indicate?'Send indication':'Send notification';
- if(item)syncField('gattHex',spacedHex(item.currentHex),changed);
+ if(item&&gattAvailable)syncField('gattHex',spacedHex(item.currentHex),changed);
  updateGattDraft(item);
 }
-function renderGatt(data){
- gattAvailable=!!data;
- if(data){gattValues=data.values||[];options('gattTarget',gattValues.map(item=>[item.targetId,item.name+' - '+item.characteristicUuid]));}
- renderGattSelection();renderGattScenario();if(status)setWorkerAvailability(status);
+function gattRecoveryRequired(){
+ const operation=status&&status.lastOperation,error=operation&&operation.error;
+ return gattState==='RecoveryRequired'||!!(error&&error.code==='gatt_recovery_required');
+}
+function activeDirectedAdvertising(){
+ return !!(status&&Array.isArray(status.advertising)&&status.advertising.some(item=>item.active&&[4,5,6].includes(Number(item.mode))));
+}
+function gattStructuralBlocked(){
+ const peers=status&&Array.isArray(status.connections)?status.connections:null;
+ return !statusAvailable||!peers||peers.length>0||activeDirectedAdvertising();
+}
+function renderGattStatus(){
+ const operation=status&&status.lastOperation,error=operation&&operation.error,recovery=gattRecoveryRequired();
+ const restoreWarning=operation&&operation.state==='Done'&&operation.result==='Applied'&&error&&error.code==='advertising_restore_incomplete';
+ let message='GATT state: '+(gattState||'Unknown')+'. Values: '+(gattAvailable?'current':'stale or unavailable')+
+  '; service inventory: '+(gattServicesAvailable?'current':'stale or unavailable')+'.';
+ if(gattReason)message+=' Reason: '+gattReason;
+ if(recovery){
+  const detail=(error&&error.code==='gatt_recovery_required'&&operation.detail)||gattReason||'Restart the device before using GATT operations.';
+  message='GATT recovery required. '+detail+' The previous service inventory is hidden because it may not match the current database.';
+ }else if(restoreWarning){
+  message+=' Warning: advertising restoration was incomplete after the database change. '+(operation.detail||'Refresh and review advertising state.');
+ }
+ $('gattSnapshotStatus').textContent=message;
+}
+function renderGattInventory(){
+ const recovery=gattRecoveryRequired();
+ const table=$('gattServiceTable'),notice=$('gattInventoryStatus');
+ if(gattServicesAvailable&&!recovery){
+  const protectedCount=gattServices.filter(item=>item.protectedService).length;
+  const temporaryCount=gattServices.filter(item=>!item.protectedService).length;
+  notice.textContent='Current inventory: '+protectedCount+' protected fixture service(s), '+temporaryCount+' temporary service(s); temporary-service limit '+gattServiceLimit+'.';
+  renderTable('gattServiceTable',['Service ID','Service UUID','Characteristic UUID','Type'],gattServices.map(item=>[
+   item.serviceId,item.serviceUuid,item.characteristicUuid,item.protectedService?'Protected fixture':'Temporary'
+  ]));
+  const removable=gattServices.filter(item=>!item.protectedService);
+  options('gattRemoveTarget',removable.length?removable.map(item=>[item.serviceId,item.serviceUuid+' - '+item.serviceId]):[['','No temporary services',true]]);
+ }else if(recovery){
+  notice.textContent='Service inventory unavailable during recovery; previous entries are hidden.';
+  table.replaceChildren();
+  options('gattRemoveTarget',[]);
+ }else{
+  notice.textContent=gattServices.length?'Stale service inventory (not current). '+(gattReason||'Waiting for a successful inventory snapshot.'):'No current or prior service inventory is available.';
+  if(gattServices.length)renderTable('gattServiceTable',['Service ID','Service UUID','Characteristic UUID','Type'],gattServices.map(item=>[
+   item.serviceId,item.serviceUuid,item.characteristicUuid,item.protectedService?'Protected fixture':'Temporary'
+  ]));
+  else table.replaceChildren();
+ }
+}
+function isGattSnapshotEnvelope(data){
+ if(!data||typeof data!=='object'||Array.isArray(data))return false;
+ if(typeof data.state!=='string'||typeof data.valuesAvailable!=='boolean'||typeof data.servicesAvailable!=='boolean')return false;
+ const valuesArray=Array.isArray(data.values),servicesArray=Array.isArray(data.services);
+ return (valuesArray||data.values===null)&&(servicesArray||data.services===null)&&
+  data.valuesAvailable===valuesArray&&data.servicesAvailable===servicesArray;
+}
+function renderGatt(data,requestReason=''){
+ if(!data){
+  gattAvailable=false;gattServicesAvailable=false;gattReason=requestReason||'GATT snapshot request failed.';
+ }else{
+  if(typeof data.state==='string')gattState=data.state;else if(!gattState)gattState='Ready';
+  if(typeof data.reason==='string')gattReason=data.reason;else gattReason=requestReason||'';
+  const valuesAvailable=typeof data.valuesAvailable==='boolean'?data.valuesAvailable:Array.isArray(data.values);
+  if(valuesAvailable&&Array.isArray(data.values)){
+   gattValues=data.values;gattAvailable=true;options('gattTarget',gattValues.map(item=>[item.targetId,item.name+' - '+item.characteristicUuid]));
+  }else gattAvailable=false;
+  const servicesAvailable=typeof data.servicesAvailable==='boolean'?data.servicesAvailable:Array.isArray(data.services);
+  if(servicesAvailable&&Array.isArray(data.services)){
+   gattServices=data.services;gattServicesAvailable=true;
+   if(Number.isInteger(data.serviceLimit)&&data.serviceLimit>=0)gattServiceLimit=data.serviceLimit;
+  }else gattServicesAvailable=false;
+   if(gattRecoveryRequired()){gattAvailable=false;gattServicesAvailable=false;}
+  if(gattState==='Applying'||gattState==='RecoveryRequired'||gattRecoveryRequired())gattReadyObserved=false;
+  else if(gattState==='Ready'&&(gattAvailable||gattServicesAvailable))gattReadyObserved=true;
+ }
+ if(data&&Number.isInteger(data.serviceLimit)&&data.serviceLimit>=0)gattServiceLimit=data.serviceLimit;
+ renderGattSelection();renderGattStatus();renderGattInventory();renderGattScenario();if(status)setWorkerAvailability(status);
 }
 function renderGattScenario(){
  const scenario=gattScenarios[Number($('gattScenario').value)||0];
  $('gattScenarioInfo').textContent=scenario.text();
- $('gattPrefill').disabled=!gattAvailable||!scenario.suffix||!gattValues.some(item=>item.characteristicUuid===fixtureUuid(scenario.suffix));
+ const canPrefill=!!scenario.suffix&&gattAvailable&&gattValues.some(item=>item.characteristicUuid===fixtureUuid(scenario.suffix))||
+  scenario.kind==='add'&&!!scenario.serviceUuid||
+  scenario.kind==='remove'&&gattServicesAvailable&&gattServices.some(item=>!item.protectedService);
+ $('gattPrefill').disabled=!canPrefill;
 }
 function prefillGatt(){
  const scenario=gattScenarios[Number($('gattScenario').value)||0];
  const target=gattValues.find(item=>scenario.suffix&&item.characteristicUuid===fixtureUuid(scenario.suffix));
- if(!gattAvailable||!target)return;
- $('gattTarget').value=target.targetId;renderGattSelection();$('gattHex').value=scenario.hex;markDirty(['gattHex']);updateGattDraft(target);
+ if(scenario.suffix){
+  if(!gattAvailable||!target)return;
+  $('gattTarget').value=target.targetId;renderGattSelection();$('gattHex').value=scenario.hex;markDirty(['gattHex']);updateGattDraft(target);
+ }else if(scenario.kind==='add'){
+  $('gattServiceUuid').value=scenario.serviceUuid;$('gattCharacteristicUuid').value=scenario.characteristicUuid;
+  $('gattInitialValueHex').value=scenario.valueHex||'';markDirty(['gattServiceUuid','gattCharacteristicUuid','gattInitialValueHex']);
+ }else if(scenario.kind==='remove'){
+  const service=gattServices.find(item=>!item.protectedService);if(!gattServicesAvailable||!service)return;
+  $('gattRemoveTarget').value=service.serviceId;markDirty(['gattRemoveTarget']);
+ }
  if(status)setWorkerAvailability(status);
+}
+function canonicalGattUuid(id,label){
+ const value=String($(id).value).trim();
+ if(!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value))
+  throw Error(label+' must use canonical 128-bit UUID form.');
+ return value.toLowerCase();
+}
+function checkGattStructuralAdmission(){
+ if(!gattServicesAvailable||gattState!=='Ready'||gattRecoveryRequired())throw Error('Wait for a current Ready GATT service inventory.');
+ if(gattStructuralBlocked())throw Error('Disconnect every peer and stop directed advertising before adding or removing a service.');
+}
+function addGattService(){
+ checkGattStructuralAdmission();
+ const serviceUuid=canonicalGattUuid('gattServiceUuid','Service UUID');
+ const characteristicUuid=canonicalGattUuid('gattCharacteristicUuid','Characteristic UUID');
+ const draft=$('gattInitialValueHex').value,count=gattDraftByteCount(draft);
+ if(count===null||count>256)throw Error('Initial value must contain complete hexadecimal byte pairs and be at most 256 bytes.');
+ const valueHex=parseGattHex(draft);
+ const fields=['gattServiceUuid','gattCharacteristicUuid','gattInitialValueHex'];markDirty(fields);
+ return post('gatt','addService',{serviceUuid,characteristicUuid,valueHex},fields);
+}
+function removeGattService(){
+ checkGattStructuralAdmission();
+ const serviceId=$('gattRemoveTarget').value;
+ if(!serviceId||!gattServices.some(item=>!item.protectedService&&item.serviceId===serviceId))
+  throw Error('Select a current temporary service to remove.');
+ markDirty(['gattRemoveTarget']);
+ return post('gatt','removeService',{serviceId},['gattRemoveTarget']);
+}
+function sendGattServiceChanged(){
+ if(gattState!=='Ready'||!gattReadyObserved||gattRecoveryRequired())throw Error('Service Changed requires a previously observed ready GATT database.');
+ return post('gatt','sendServiceChanged');
 }
 function publishGatt(){
  const item=selectedGatt();if(!item)throw Error('Wait for a current GATT target.');
@@ -465,8 +600,17 @@ function setWorkerAvailability(data){
  const operation=data.lastOperation,busy=localWorkerBusy||!!operation&&(operation.state==='Queued'||operation.state==='Running');
  for(const control of document.querySelectorAll('[data-worker-action]'))control.disabled=busy||!csrf;
  const gatt=selectedGatt();
-  const gattDraftCanSend=updateGattDraft(gatt);
-  $('gattPublish').disabled=busy||!csrf||!gatt||!gattDraftCanSend;
+ const gattDraftCanSend=updateGattDraft(gatt);
+ $('gattPublish').disabled=busy||!csrf||!gattAvailable||!gatt||!gattDraftCanSend;
+ $('gattTarget').disabled=!gattAvailable;
+ const recovery=gattRecoveryRequired(),canManageServices=gattState==='Ready'&&gattServicesAvailable&&!recovery&&!gattStructuralBlocked();
+ const temporaryServices=gattServices.filter(item=>!item.protectedService);
+ const selectedServiceId=$('gattRemoveTarget').value;
+ const selectedTemporaryService=temporaryServices.some(item=>item.serviceId===selectedServiceId);
+ $('gattAddService').disabled=busy||!csrf||!canManageServices||temporaryServices.length>=gattServiceLimit;
+ $('gattRemoveTarget').disabled=busy||!csrf||!canManageServices||temporaryServices.length===0;
+ $('gattRemoveService').disabled=busy||!csrf||!canManageServices||!selectedTemporaryService;
+ $('gattSendServiceChanged').disabled=busy||!csrf||gattState!=='Ready'||!gattReadyObserved||recovery;
  const advertising=data.advertising||[],bonds=data.bonds||[],connections=data.connections||[],caps=data.capabilities||{};
  const adv=advertising.find(item=>String(item.instanceId)===$('adv').value);
  const peer=connections.find(item=>item.connectionId===$('peer').value);
@@ -505,8 +649,9 @@ function setWorkerAvailability(data){
  if(Number.isInteger(caps.maxAdvertisingInstances))$('newId').max=Math.max(0,caps.maxAdvertisingInstances-1);
 }
 function renderStatus(data){
- const previousToken=csrf;status=data;csrf=data.csrfToken||'';
- if(previousToken&&csrf&&previousToken!==csrf){for(const id of submittedFields.keys())clearSubmittedFields(id);lastSeenWorkerOperationId='';lastVisibleOperationId='';localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';restartPolicyPending=null;gattAvailable=false;}
+ const previousToken=csrf;status=data;statusAvailable=true;csrf=data.csrfToken||'';
+ const operationError=data.lastOperation&&data.lastOperation.error;if(operationError&&operationError.code==='gatt_recovery_required')gattReadyObserved=false;
+ if(previousToken&&csrf&&previousToken!==csrf){for(const id of submittedFields.keys())clearSubmittedFields(id);lastSeenWorkerOperationId='';lastVisibleOperationId='';localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';restartPolicyPending=null;gattAvailable=false;gattServicesAvailable=false;gattReadyObserved=false;gattState='';gattReason='Device session changed; refreshing GATT state.';}
  observeWorker(data.lastOperation);
  const device=data.device||{},network=data.network||{},caps=data.capabilities||{},ads=data.advertising||[],bonds=data.bonds||[],peers=data.connections||[];
  $('connection').textContent=(device.name||'Peripheral')+' - '+(network.ip||'network unavailable');
@@ -612,11 +757,15 @@ async function poll(){
  if(polling)return;polling=true;
  try{
   try{renderStatus(await jsonFetch('/api/status'));shownPollErrors.delete('Status');}
-  catch(error){$('connection').textContent='Status unavailable: '+error.message;showPollError('Status',error);}
+  catch(error){statusAvailable=false;$('connection').textContent='Status unavailable: '+error.message;if(status)setWorkerAvailability(status);showPollError('Status',error);}
   try{renderPairing(await jsonFetch('/api/pairing'));shownPollErrors.delete('Pairing status');}
   catch(error){$('pairingCapability').textContent='Pairing state is temporarily unavailable.';showPollError('Pairing status',error);}
   try{renderGatt(await jsonFetch('/api/gatt'));shownPollErrors.delete('GATT status');}
-  catch(error){renderGatt(null);showPollError('GATT status',error);}
+  catch(error){
+   if(isGattSnapshotEnvelope(error&&error.body))renderGatt(error.body,error.message);
+   else renderGatt(null,error.message);
+   showPollError('GATT status',error);
+  }
  }finally{polling=false;setTimeout(poll,1500);}
 }
 function installHandlers(){
@@ -625,7 +774,12 @@ function installHandlers(){
  $('gattPrefill').onclick=prefillGatt;
  $('gattTarget').onchange=()=>{renderGattSelection();if(status)setWorkerAvailability(status);};
  $('gattHex').oninput=()=>{markDirty(['gattHex']);if(status)setWorkerAvailability(status);else updateGattDraft();};
+ for(const id of ['gattServiceUuid','gattCharacteristicUuid','gattInitialValueHex'])$(id).oninput=()=>{markDirty([id]);if(status)setWorkerAvailability(status);};
+ $('gattRemoveTarget').onchange=()=>{markDirty(['gattRemoveTarget']);if(status)setWorkerAvailability(status);};
  $('gattPublish').onclick=()=>invoke(publishGatt);
+ $('gattAddService').onclick=()=>invoke(addGattService);
+ $('gattRemoveService').onclick=()=>invoke(removeGattService);
+ $('gattSendServiceChanged').onclick=()=>invoke(sendGattServiceChanged);
  $('adv').onchange=()=>{resetAdvertisingDraftOnSwitch();renderSelection();if(status)setWorkerAvailability(status);};$('peer').onchange=()=>{renderSelection();if(status)setWorkerAvailability(status);};
  $('start').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:true});});
  $('stop').onclick=()=>invoke(()=>{const instanceId=selectedAdv();return advPost(instanceId,'setActive',{active:false});});

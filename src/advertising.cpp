@@ -1,8 +1,11 @@
 // advertising.cpp
 #include "advertising.h"
+#include "dynamicGatt.h"
 #include "fixtureGatt.h"
 #include <Arduino.h>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <set>
@@ -11,6 +14,14 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/timers.h>
+#ifdef USING_NIMBLE_ARDUINO_HEADERS
+#include "nimble/porting/nimble/include/nimble/nimble_port.h"
+#else
+#include "nimble/nimble_port.h"
+#endif
+#if CONFIG_BT_NIMBLE_EXT_ADV
+#include <host/ble_gap.h>
+#endif
 
 namespace
 {
@@ -24,6 +35,46 @@ namespace
 	std::set<uint8_t> pendingRestartInstances_;
 	std::map<uint8_t, uint32_t> restartGenerations_;
 	constexpr uint32_t kRestartDelayMs = 5000;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	constexpr size_t kDeferredAdvertisingSlots = CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES;
+#else
+	constexpr size_t kDeferredAdvertisingSlots = 1;
+#endif
+	struct DeferredStopCallback
+	{
+		bool pending = false;
+		int reason = 0;
+		bool activeAfterCallback = false;
+		bool restartEligible = false;
+		bool clearDirected = false;
+		uint32_t intentEpoch = 0;
+	};
+	struct DeferredCallbacks
+	{
+		bool connectionEstablished = false;
+		uint32_t connectionIntentEpoch = 0;
+		std::array<DeferredStopCallback, kDeferredAdvertisingSlots> advertisingStopped{};
+		std::array<bool, kDeferredAdvertisingSlots> restartTimerPending{};
+		std::array<uint32_t, kDeferredAdvertisingSlots> restartTimerGenerations{};
+	};
+	std::array<std::atomic<uint32_t>, kDeferredAdvertisingSlots> advertisingIntentEpochs_{};
+	std::mutex deferredCallbacksMutex_;
+	DeferredCallbacks deferredCallbacks_;
+	ble_npl_event deferredCallbacksEvent_{};
+	bool deferredCallbacksEventInitialized_ = false;
+	bool deferredCallbacksEventQueued_ = false;
+	void deferredAdvertisingEventHandler(ble_npl_event* event);
+	void queueDeferredAdvertisingEventIfReady();
+	void deferConnectionEstablished();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void deferAdvertisingStopped(uint8_t instanceId, int reason, bool activeAfterCallback, bool restartEligible, bool clearDirected);
+#endif
+	void deferRestartTimer(uint8_t instanceId, uint32_t generation);
+	void processConnectionEstablished();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void processAdvertisingStopped(uint8_t instanceId, int reason, bool activeAfterCallback, bool restartEligible, bool clearDirected);
+#endif
+	void processRestartTimer(uint8_t instanceId, uint32_t generation);
 #if CONFIG_BT_NIMBLE_EXT_ADV
 	// Explicit extended-advertising stop completion is the successful NimBLE HCI
 	// disable return plus a verified inactive state. NimBLE-Arduino does not
@@ -41,6 +92,29 @@ namespace
 #else
 	NimBLEExtAdvertising* Adv() { return NimBLEDevice::getAdvertising(); }
 #endif
+
+	bool hostAdvertisingActive(uint8_t instanceId)
+	{
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		return ble_gap_ext_adv_active(instanceId) != 0;
+#else
+		auto* adv = Adv();
+		return instanceId == 0 && adv != nullptr && adv->isAdvertising();
+#endif
+	}
+
+	uint32_t advertisingIntentEpoch(uint8_t instanceId)
+	{
+		return instanceId < kDeferredAdvertisingSlots
+			? advertisingIntentEpochs_[instanceId].load(std::memory_order_relaxed)
+			: 0;
+	}
+
+	void advanceAdvertisingIntentEpoch(uint8_t instanceId)
+	{
+		if (instanceId < kDeferredAdvertisingSlots && DynamicGatt::CurrentState() != DynamicGatt::State::Applying)
+			advertisingIntentEpochs_[instanceId].fetch_add(1, std::memory_order_relaxed);
+	}
 
 #if CONFIG_BT_NIMBLE_EXT_ADV
 	uint32_t beginStopRequestLocked(uint8_t instanceId)
@@ -380,12 +454,19 @@ namespace
 
 	void cancelRestartLocked(uint8_t instanceId, const char* reason)
 	{
+		advanceAdvertisingIntentEpoch(instanceId);
 		if (invalidateRestartLocked(instanceId))
 			Serial.printf("[BT] Advertising restart cancelled | Adv[%u] | %s\n", instanceId, reason);
 	}
 
 	void cancelAllRestartsLocked(const char* reason)
 	{
+		if (DynamicGatt::CurrentState() != DynamicGatt::State::Applying)
+			for (const auto& [instanceId, config] : configs_)
+			{
+				(void)config;
+				advanceAdvertisingIntentEpoch(instanceId);
+			}
 		if (invalidateAllRestartsLocked())
 			Serial.printf("[BT] Advertising restarts cancelled | all instances | %s\n", reason);
 	}
@@ -443,15 +524,15 @@ namespace
 		}
 	}
 
-	void scheduleRestartTimer(uint8_t instanceId)
+	bool scheduleRestartTimer(uint8_t instanceId)
 	{
 		uint32_t generation = 0;
 		{
 			std::lock_guard<std::mutex> lk(configMutex_);
 			auto it = configs_.find(instanceId);
 			if (it == configs_.end() || pendingRestartInstances_.find(instanceId) == pendingRestartInstances_.end() ||
-				directedActive_ || !restartPolicyEnabledLocked(it->second) || Advertising::IsActive(instanceId))
-				return;
+				directedActive_ || !restartPolicyEnabledLocked(it->second) || hostAdvertisingActive(instanceId))
+				return false;
 			generation = restartGenerations_[instanceId];
 		}
 
@@ -463,8 +544,9 @@ namespace
 			auto existing = restartTimers_.find(instanceId);
 			if (existing != restartTimers_.end())
 			{
-				if (restartTimerGenerations_[instanceId] == generation)
-					return;
+				auto existingGeneration = restartTimerGenerations_.find(instanceId);
+				if (existingGeneration != restartTimerGenerations_.end() && existingGeneration->second == generation)
+					return true;
 				staleTimer = existing->second;
 				restartTimers_.erase(existing);
 				restartTimerGenerations_.erase(instanceId);
@@ -494,15 +576,50 @@ namespace
 			xTimerDelete(staleTimer, 0);
 		}
 		if (!timer)
-			return;
+			return false;
 
 		if (timerStartResult != pdPASS)
 		{
 			xTimerDelete(timer, 0);
 			Serial.printf("[ERR] Failed to start advertising restart timer for Adv[%u]\n", instanceId);
-			return;
+			return false;
 		}
 		Serial.printf("[BT] Advertising restart scheduled | Adv[%u] | delay:%ums\n", instanceId, kRestartDelayMs);
+		return true;
+	}
+
+
+	bool rearmRestartAfterRebuild(uint8_t instanceId)
+	{
+		bool configFound = false;
+		bool shouldSchedule = false;
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			auto it = configs_.find(instanceId);
+			configFound = it != configs_.end();
+			if (!configFound)
+			{
+				cancelRestartLocked(instanceId, "configuration removed during rebuild");
+			}
+			else if (directedActive_ || !restartPolicyEnabledLocked(it->second) || hostAdvertisingActive(instanceId))
+			{
+				cancelRestartLocked(instanceId, "restart no longer eligible after rebuild");
+			}
+			else
+			{
+				// Fence callbacks from old timers, then create a fresh intent generation.
+				pendingRestartInstances_.erase(instanceId);
+				++restartGenerations_[instanceId];
+				shouldSchedule = markRestartPendingLocked(instanceId, "GATT rebuild restoration");
+			}
+		}
+
+		cancelRestartTimer(instanceId);
+		if (!configFound)
+			return false;
+		if (!shouldSchedule)
+			return true;
+		return scheduleRestartTimer(instanceId);
 	}
 
 	void restartTimerCallback(TimerHandle_t timer)
@@ -515,10 +632,13 @@ namespace
 			{
 				if (it->second == timer)
 				{
-					instanceId = it->first;
-					generation = restartTimerGenerations_[it->first];
+					const uint8_t foundInstanceId = it->first;
+					instanceId = foundInstanceId;
+					auto generationIt = restartTimerGenerations_.find(foundInstanceId);
+					if (generationIt != restartTimerGenerations_.end())
+						generation = generationIt->second;
+					restartTimerGenerations_.erase(foundInstanceId);
 					restartTimers_.erase(it);
-					restartTimerGenerations_.erase(it->first);
 					break;
 				}
 			}
@@ -624,7 +744,7 @@ namespace
 		return ok;
 	}
 
-	void tryRestart(uint8_t instanceId, uint32_t generation)
+	void processRestartTimer(uint8_t instanceId, uint32_t generation)
 	{
 		bool retry = false;
 		{
@@ -644,14 +764,14 @@ namespace
 				cancelRestartLocked(instanceId, "restart policy no longer eligible");
 				return;
 			}
-			if (Advertising::IsActive(instanceId))
+			if (hostAdvertisingActive(instanceId))
 			{
 				cancelRestartLocked(instanceId, "advertising already active");
 				return;
 			}
 
 			Serial.printf("[BT] Advertising restart attempted | Adv[%u]\n", instanceId);
-			if (startInstanceLocked(instanceId) && Advertising::IsActive(instanceId))
+			if (startInstanceLocked(instanceId) && hostAdvertisingActive(instanceId))
 			{
 				invalidateRestartLocked(instanceId);
 				Serial.printf("[BT] Advertising restarted | Adv[%u]\n", instanceId);
@@ -665,6 +785,253 @@ namespace
 
 		if (retry)
 			scheduleRestartTimer(instanceId);
+	}
+
+	void tryRestart(uint8_t instanceId, uint32_t generation)
+	{
+		DynamicGatt::Entry entry;
+		if (!entry)
+		{
+			deferRestartTimer(instanceId, generation);
+			return;
+		}
+		processRestartTimer(instanceId, generation);
+	}
+
+	void processConnectionEstablished()
+	{
+		bool shouldSchedule = false;
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			if (directedActive_)
+			{
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+				restoreLegacyOrdinaryLocked();
+#else
+				clearDirectedStateLocked();
+#endif
+			}
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+			else
+				shouldSchedule = markRestartPendingLocked(0, "connection");
+#endif
+		}
+
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+		if (shouldSchedule)
+			scheduleRestartTimer(0);
+#else
+		(void)shouldSchedule;
+#endif
+	}
+
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void processAdvertisingStopped(uint8_t instanceId, int reason, bool activeAfterCallback, bool restartEligible, bool clearDirected)
+	{
+		bool shouldSchedule = false;
+		bool explicitStopPending = false;
+		{
+			std::lock_guard<std::mutex> lk(configMutex_);
+			explicitStopPending = stopRequestGenerations_.find(instanceId) != stopRequestGenerations_.end();
+			if (directedActive_ && directedInstance_.has_value() && *directedInstance_ == instanceId)
+			{
+				if (clearDirected && !activeAfterCallback)
+					clearDirectedStateLocked();
+			}
+			else if (!explicitStopPending && !directedActive_ && restartEligible)
+			{
+				shouldSchedule = markRestartPendingLocked(instanceId,
+					reason == 0 ? "connection" : "host preemption");
+			}
+		}
+		Serial.printf("[BT] Advertising stop complete | Adv[%u] | generation:0 | reason:0x%x | active:%u | source:adv-complete\n",
+			instanceId, reason, activeAfterCallback ? 1u : 0u);
+		if (shouldSchedule)
+			scheduleRestartTimer(instanceId);
+	}
+#endif
+
+	bool hasDeferredCallbacksLocked(const DeferredCallbacks& callbacks)
+	{
+		if (callbacks.connectionEstablished)
+			return true;
+		for (size_t i = 0; i < kDeferredAdvertisingSlots; ++i)
+			if (callbacks.advertisingStopped[i].pending || callbacks.restartTimerPending[i])
+				return true;
+		return false;
+	}
+
+	void mergeDeferredCallbacksLocked(const DeferredCallbacks& source)
+	{
+		const uint32_t currentConnectionEpoch = advertisingIntentEpoch(0);
+		if (source.connectionEstablished)
+		{
+			const bool storedCurrent = deferredCallbacks_.connectionEstablished &&
+				deferredCallbacks_.connectionIntentEpoch == currentConnectionEpoch;
+			if (source.connectionIntentEpoch == currentConnectionEpoch)
+			{
+				if (!storedCurrent)
+					deferredCallbacks_.connectionIntentEpoch = source.connectionIntentEpoch;
+				deferredCallbacks_.connectionEstablished = true;
+			}
+			else if (!storedCurrent)
+				deferredCallbacks_.connectionEstablished = false;
+		}
+		for (size_t i = 0; i < kDeferredAdvertisingSlots; ++i)
+		{
+			const auto& incomingStop = source.advertisingStopped[i];
+			if (incomingStop.pending)
+			{
+				auto& stored = deferredCallbacks_.advertisingStopped[i];
+				const uint32_t currentEpoch = advertisingIntentEpoch(static_cast<uint8_t>(i));
+				const bool storedCurrent = stored.pending && stored.intentEpoch == currentEpoch;
+				if (incomingStop.intentEpoch == currentEpoch)
+				{
+					if (!storedCurrent)
+						stored = incomingStop;
+					else
+					{
+						// Keep the latest captured stop details while retaining every coalesced effect.
+						stored.restartEligible = stored.restartEligible || incomingStop.restartEligible;
+						stored.clearDirected = stored.clearDirected || incomingStop.clearDirected;
+					}
+				}
+				else if (!storedCurrent)
+					stored = {};
+			}
+			if (source.restartTimerPending[i])
+			{
+				if (!deferredCallbacks_.restartTimerPending[i])
+					deferredCallbacks_.restartTimerGenerations[i] = source.restartTimerGenerations[i];
+				deferredCallbacks_.restartTimerPending[i] = true;
+			}
+		}
+	}
+
+	void queueDeferredAdvertisingEventIfReady()
+	{
+		if (DynamicGatt::CurrentState() != DynamicGatt::State::Ready)
+			return;
+		bool shouldQueue = false;
+		{
+			std::lock_guard<std::mutex> lk(deferredCallbacksMutex_);
+			if (!hasDeferredCallbacksLocked(deferredCallbacks_) || deferredCallbacksEventQueued_)
+				return;
+			if (!deferredCallbacksEventInitialized_)
+			{
+				ble_npl_event_init(&deferredCallbacksEvent_, deferredAdvertisingEventHandler, nullptr);
+				deferredCallbacksEventInitialized_ = true;
+			}
+			deferredCallbacksEventQueued_ = true;
+			shouldQueue = true;
+		}
+		if (shouldQueue)
+		{
+			auto* eventQueue = nimble_port_get_dflt_eventq();
+			if (eventQueue)
+				ble_npl_eventq_put(eventQueue, &deferredCallbacksEvent_);
+			else
+			{
+				std::lock_guard<std::mutex> lk(deferredCallbacksMutex_);
+				deferredCallbacksEventQueued_ = false;
+			}
+		}
+	}
+
+	void deferConnectionEstablished()
+	{
+		const uint32_t intentEpoch = advertisingIntentEpoch(0);
+		{
+			std::lock_guard<std::mutex> lk(deferredCallbacksMutex_);
+			if (!deferredCallbacks_.connectionEstablished || deferredCallbacks_.connectionIntentEpoch != intentEpoch)
+				deferredCallbacks_.connectionIntentEpoch = intentEpoch;
+			deferredCallbacks_.connectionEstablished = true;
+		}
+		queueDeferredAdvertisingEventIfReady();
+	}
+
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void deferAdvertisingStopped(uint8_t instanceId, int reason, bool activeAfterCallback, bool restartEligible, bool clearDirected)
+	{
+		if (instanceId >= kDeferredAdvertisingSlots)
+			return;
+		const uint32_t intentEpoch = advertisingIntentEpoch(instanceId);
+		{
+			std::lock_guard<std::mutex> lk(deferredCallbacksMutex_);
+			auto& stored = deferredCallbacks_.advertisingStopped[instanceId];
+			if (!stored.pending || stored.intentEpoch != intentEpoch)
+			{
+				stored.pending = true;
+				stored.reason = reason;
+				stored.activeAfterCallback = activeAfterCallback;
+				stored.restartEligible = restartEligible;
+				stored.clearDirected = clearDirected;
+				stored.intentEpoch = intentEpoch;
+			}
+			else
+			{
+				stored.reason = reason;
+				stored.activeAfterCallback = activeAfterCallback;
+				stored.restartEligible = stored.restartEligible || restartEligible;
+				stored.clearDirected = stored.clearDirected || clearDirected;
+			}
+		}
+		queueDeferredAdvertisingEventIfReady();
+	}
+#endif
+
+	void deferRestartTimer(uint8_t instanceId, uint32_t generation)
+	{
+		if (instanceId >= kDeferredAdvertisingSlots)
+			return;
+		{
+			std::lock_guard<std::mutex> lk(deferredCallbacksMutex_);
+			deferredCallbacks_.restartTimerPending[instanceId] = true;
+			deferredCallbacks_.restartTimerGenerations[instanceId] = generation;
+		}
+		queueDeferredAdvertisingEventIfReady();
+	}
+
+	void deferredAdvertisingEventHandler(ble_npl_event* event)
+	{
+		(void)event;
+		DeferredCallbacks callbacks;
+		{
+			std::lock_guard<std::mutex> lk(deferredCallbacksMutex_);
+			deferredCallbacksEventQueued_ = false;
+			callbacks = deferredCallbacks_;
+			deferredCallbacks_ = {};
+		}
+		if (!hasDeferredCallbacksLocked(callbacks))
+			return;
+
+		DynamicGatt::Entry entry;
+		if (!entry)
+		{
+			{
+				std::lock_guard<std::mutex> lk(deferredCallbacksMutex_);
+				mergeDeferredCallbacksLocked(callbacks);
+			}
+			// Keep payload while Applying/RecoveryRequired; the Entry destructor calls DrainDeferredCallbacks after a Ready transition.
+			queueDeferredAdvertisingEventIfReady();
+			return;
+		}
+
+		if (callbacks.connectionEstablished && callbacks.connectionIntentEpoch == advertisingIntentEpoch(0))
+			processConnectionEstablished();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		for (uint8_t instanceId = 0; instanceId < kDeferredAdvertisingSlots; ++instanceId)
+		{
+			const auto& stopped = callbacks.advertisingStopped[instanceId];
+			if (stopped.pending && stopped.intentEpoch == advertisingIntentEpoch(instanceId))
+				processAdvertisingStopped(instanceId, stopped.reason, stopped.activeAfterCallback, stopped.restartEligible, stopped.clearDirected);
+		}
+#endif
+		for (uint8_t instanceId = 0; instanceId < kDeferredAdvertisingSlots; ++instanceId)
+		{
+			if (callbacks.restartTimerPending[instanceId])
+				processRestartTimer(instanceId, callbacks.restartTimerGenerations[instanceId]);
+		}
 	}
 
 	bool makeModeTransitionCandidateLocked(
@@ -983,7 +1350,7 @@ namespace Advertising
 			cancelRestartLocked(instanceId, "manual stop");
 			cancelRestartTimer(instanceId);
 #if CONFIG_BT_NIMBLE_EXT_ADV
-			wasActive = adv->isActive(instanceId);
+			wasActive = hostAdvertisingActive(instanceId);
 			if (wasActive)
 				stopGeneration = beginStopRequestLocked(instanceId);
 #else
@@ -999,7 +1366,7 @@ namespace Advertising
 #endif
 		bool ok = stopSucceeded;
 #if CONFIG_BT_NIMBLE_EXT_ADV
-		const bool inactive = !adv->isActive(instanceId);
+		const bool inactive = !hostAdvertisingActive(instanceId);
 		bool stopCompletionPublished = stopGeneration == 0 && inactive;
 		if (stopGeneration != 0)
 		{
@@ -1057,7 +1424,7 @@ namespace Advertising
 		StopAllResult result;
 		for (uint8_t instanceId : instanceIds)
 		{
-			if (!IsActive(instanceId))
+			if (!hostAdvertisingActive(instanceId))
 				continue;
 			if (Stop(instanceId))
 				++result.stopped;
@@ -1065,6 +1432,67 @@ namespace Advertising
 				++result.failed;
 		}
 		return result;
+	}
+
+	bool CaptureForRebuild(RebuildSnapshot& out)
+	{
+		std::lock_guard<std::mutex> lk(configMutex_);
+		if (!Adv())
+			return false;
+
+		RebuildSnapshot snapshot;
+		snapshot.configs.reserve(configs_.size());
+		snapshot.active.reserve(configs_.size());
+		snapshot.pending.reserve(pendingRestartInstances_.size());
+		for (const auto& [instanceId, config] : configs_)
+		{
+			snapshot.configs.push_back(config);
+			if (hostAdvertisingActive(instanceId))
+				snapshot.active.push_back(instanceId);
+		}
+		for (const uint8_t instanceId : pendingRestartInstances_)
+			snapshot.pending.push_back(instanceId);
+		out = std::move(snapshot);
+		return true;
+	}
+
+	bool RestoreAfterRebuild(const RebuildSnapshot& snapshot)
+	{
+		if (!FixtureGatt::Ready())
+			return false;
+
+		bool success = true;
+		std::set<uint8_t> failedConfigs;
+		for (const auto& config : snapshot.configs)
+		{
+			if (!ApplyConfig(config))
+			{
+				failedConfigs.insert(config.id);
+				success = false;
+			}
+		}
+		for (const uint8_t instanceId : snapshot.active)
+		{
+			if (failedConfigs.find(instanceId) != failedConfigs.end())
+			{
+				success = false;
+				continue;
+			}
+			const bool startAccepted = Start(instanceId);
+			if (!startAccepted || !hostAdvertisingActive(instanceId))
+				success = false;
+		}
+		for (const uint8_t instanceId : snapshot.pending)
+		{
+			if (failedConfigs.find(instanceId) != failedConfigs.end())
+			{
+				success = false;
+				continue;
+			}
+			if (!rearmRestartAfterRebuild(instanceId))
+				success = false;
+		}
+		return success;
 	}
 
 	bool IsActive(uint8_t instanceId)
@@ -1330,58 +1758,35 @@ namespace Advertising
 
 	void OnConnectionEstablished()
 	{
-		bool shouldSchedule = false;
+		DynamicGatt::Entry entry;
+		if (!entry)
 		{
-			std::lock_guard<std::mutex> lk(configMutex_);
-			if (directedActive_)
-			{
-#if !CONFIG_BT_NIMBLE_EXT_ADV
-				restoreLegacyOrdinaryLocked();
-#else
-				clearDirectedStateLocked();
-#endif
-			}
-#if !CONFIG_BT_NIMBLE_EXT_ADV
-			else
-				shouldSchedule = markRestartPendingLocked(0, "connection");
-#endif
+			deferConnectionEstablished();
+			return;
 		}
-
-#if !CONFIG_BT_NIMBLE_EXT_ADV
-		if (shouldSchedule)
-			scheduleRestartTimer(0);
-#else
-		(void)shouldSchedule;
-#endif
+		processConnectionEstablished();
 	}
 
 	#if CONFIG_BT_NIMBLE_EXT_ADV
 	void OnAdvertisingStopped(uint8_t instanceId, int reason)
 	{
-		bool shouldSchedule = false;
-		bool activeAfterCallback = false;
-		bool explicitStopPending = false;
+		const bool activeAfterCallback = hostAdvertisingActive(instanceId);
+		const bool restartEligible = reason == 0 || reason == BLE_HS_EPREEMPTED;
+		const bool clearDirected = reason != BLE_HS_EDONE;
+		DynamicGatt::Entry entry;
+		if (!entry)
 		{
-			std::lock_guard<std::mutex> lk(configMutex_);
-			activeAfterCallback = Adv() != nullptr && Adv()->isActive(instanceId);
-			explicitStopPending = stopRequestGenerations_.find(instanceId) != stopRequestGenerations_.end();
-			if (directedActive_ && directedInstance_.has_value() && *directedInstance_ == instanceId)
-			{
-				if (reason != BLE_HS_EDONE && !activeAfterCallback)
-					clearDirectedStateLocked();
-			}
-			else if (!explicitStopPending && !directedActive_ && (reason == 0 || reason == BLE_HS_EPREEMPTED))
-			{
-				shouldSchedule = markRestartPendingLocked(instanceId,
-					reason == 0 ? "connection" : "host preemption");
-			}
+			deferAdvertisingStopped(instanceId, reason, activeAfterCallback, restartEligible, clearDirected);
+			return;
 		}
-		Serial.printf("[BT] Advertising stop complete | Adv[%u] | generation:0 | reason:0x%x | active:%u | source:adv-complete\n",
-			instanceId, reason, activeAfterCallback ? 1u : 0u);
-		if (shouldSchedule)
-			scheduleRestartTimer(instanceId);
+		processAdvertisingStopped(instanceId, reason, activeAfterCallback, restartEligible, clearDirected);
 	}
 	#endif
+
+	void DrainDeferredCallbacks()
+	{
+		queueDeferredAdvertisingEventIfReady();
+	}
 
 	DiscoverableMode Discoverable(uint8_t instanceId, std::optional<DiscoverableMode> mode)
 	{

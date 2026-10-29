@@ -5,6 +5,7 @@
 #include "processMenu.h"
 #include "bluetoothManager.h"
 #include "advertising.h"
+#include "dynamicGatt.h"
 #include "configMenuHelp.h"
 #include "consoleCommand.h"
 #include <Arduino.h>    // Serial, millis(), etc.
@@ -23,6 +24,12 @@ namespace
 	static std::optional<ConnectionId> selectedConnection;
 	static std::optional<NimBLEAddress> selectedBondTarget;
 	static std::atomic<uint8_t> selectedAdvInstance{0};
+
+	bool requiresDynamicGattEntry(const ConsoleCommand::Descriptor& command, char key)
+	{
+		return (command.group == ConsoleCommand::Group::Advertising && key != 'Q' && key != 'W') ||
+			key == 'D' || key == 'S';
+	}
 
 	void printCommandEcho(const ConsoleCommand::Descriptor& command, char key)
 	{
@@ -657,7 +664,18 @@ namespace ProcessMenu
 		else
 		{
 			printCommandEcho(*command, *c);
-			command->handler(*c);
+			if (requiresDynamicGattEntry(*command, *c))
+			{
+				DynamicGatt::Entry entry;
+				if (!entry)
+					Serial.println((*c == 'D' || *c == 'S')
+						? "[BUSY] Bond deletion is unavailable during GATT change/recovery"
+						: "[BUSY] Advertising changes are unavailable during GATT change/recovery");
+				else
+					command->handler(*c);
+			}
+			else
+				command->handler(*c);
 		}
 
 

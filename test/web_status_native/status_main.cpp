@@ -289,7 +289,19 @@ namespace
 		cJSON* root = cJSON_Parse(text.c_str());
 		if (!root) return false;
 		const cJSON* values = cJSON_GetObjectItemCaseSensitive(root, "values");
-		bool matches = cJSON_IsArray(values) && cJSON_GetArraySize(values) == 3;
+		const cJSON* state = cJSON_GetObjectItemCaseSensitive(root, "state");
+		const cJSON* serviceLimit = cJSON_GetObjectItemCaseSensitive(root, "serviceLimit");
+		const cJSON* valuesAvailable = cJSON_GetObjectItemCaseSensitive(root, "valuesAvailable");
+		const cJSON* servicesAvailable = cJSON_GetObjectItemCaseSensitive(root, "servicesAvailable");
+		const cJSON* services = cJSON_GetObjectItemCaseSensitive(root, "services");
+		size_t rootFieldCount = 0;
+		for (const cJSON* field = root->child; field; field = field->next) ++rootFieldCount;
+		bool matches = rootFieldCount == 6 && cJSON_IsArray(values) && cJSON_GetArraySize(values) == 3 &&
+			cJSON_IsString(state) && std::strcmp(state->valuestring, "Ready") == 0 &&
+			cJSON_IsNumber(serviceLimit) && serviceLimit->valuedouble == 4 &&
+			cJSON_IsTrue(valuesAvailable) && cJSON_IsTrue(servicesAvailable) &&
+			cJSON_IsArray(services) && cJSON_GetArraySize(services) == 2 &&
+			!cJSON_GetObjectItemCaseSensitive(root, "reason");
 		constexpr std::array<const char*, 3> names{{"Original notification", "Original indication", "Temperature Scalar"}};
 		constexpr std::array<const char*, 3> serviceUuids{{
 			"12345678-1234-5678-1234-56789abcdef0", "12345678-1234-5678-1234-56789abcdef0",
@@ -327,6 +339,40 @@ namespace
 				cJSON_IsNumber(connectedPeerCount) && connectedPeerCount->valuedouble == 2 &&
 				cJSON_IsString(currentHex) && std::strcmp(currentHex->valuestring, hexValues[i]) == 0;
 		}
+		const cJSON* protectedService = cJSON_GetArrayItem(services, 0);
+		const cJSON* temporaryService = cJSON_GetArrayItem(services, 1);
+		const cJSON* protectedId = cJSON_GetObjectItemCaseSensitive(protectedService, "serviceId");
+		const cJSON* protectedFlag = cJSON_GetObjectItemCaseSensitive(protectedService, "protectedService");
+		const cJSON* temporaryId = cJSON_GetObjectItemCaseSensitive(temporaryService, "serviceId");
+		const cJSON* temporaryFlag = cJSON_GetObjectItemCaseSensitive(temporaryService, "protectedService");
+		size_t protectedFieldCount = 0, temporaryFieldCount = 0;
+		for (const cJSON* field = protectedService ? protectedService->child : nullptr; field; field = field->next) ++protectedFieldCount;
+		for (const cJSON* field = temporaryService ? temporaryService->child : nullptr; field; field = field->next) ++temporaryFieldCount;
+		matches = matches && protectedService && temporaryService && protectedFieldCount == 4 && temporaryFieldCount == 4 &&
+			cJSON_IsString(protectedId) && std::strcmp(protectedId->valuestring, "0000000000000000-00000000") == 0 &&
+			cJSON_IsTrue(protectedFlag) && cJSON_IsString(temporaryId) &&
+			std::strcmp(temporaryId->valuestring, "123456789ABCDEF0-00000004") == 0 && cJSON_IsFalse(temporaryFlag);
+		cJSON_Delete(root);
+		return matches;
+	}
+
+	bool verifyUnavailableGattSnapshot(const std::string& text, const char* expectedState,
+		bool expectedValuesAvailable, bool expectedServicesAvailable)
+	{
+		cJSON* root = cJSON_Parse(text.c_str());
+		if (!root) return false;
+		const cJSON* state = cJSON_GetObjectItemCaseSensitive(root, "state");
+		const cJSON* valuesAvailable = cJSON_GetObjectItemCaseSensitive(root, "valuesAvailable");
+		const cJSON* servicesAvailable = cJSON_GetObjectItemCaseSensitive(root, "servicesAvailable");
+		const cJSON* values = cJSON_GetObjectItemCaseSensitive(root, "values");
+		const cJSON* services = cJSON_GetObjectItemCaseSensitive(root, "services");
+		const cJSON* reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
+		const bool matches = cJSON_IsString(state) && std::strcmp(state->valuestring, expectedState) == 0 &&
+			cJSON_IsBool(valuesAvailable) && cJSON_IsTrue(valuesAvailable) == expectedValuesAvailable &&
+			cJSON_IsBool(servicesAvailable) && cJSON_IsTrue(servicesAvailable) == expectedServicesAvailable &&
+			(expectedValuesAvailable ? cJSON_IsArray(values) : cJSON_IsNull(values)) &&
+			(expectedServicesAvailable ? cJSON_IsArray(services) : cJSON_IsNull(services)) &&
+			(!expectedValuesAvailable || !expectedServicesAvailable ? cJSON_IsString(reason) : !reason);
 		cJSON_Delete(root);
 		return matches;
 	}
@@ -361,6 +407,8 @@ namespace WebStatusTest
 {
 	MakeStatusMode makeStatusMode = MakeStatusMode::Valid;
 	GattSnapshotMode gattSnapshotMode = GattSnapshotMode::Ready;
+	DynamicGatt::Inventory gattInventory{};
+	bool dynamicGattReady = true;
 	const WorkerRecord* currentOperation = nullptr;
 	ResponseCapture response;
 
@@ -440,6 +488,9 @@ namespace WebStatusTest
 		cJSON_Delete(body);
 	}
 }
+
+DynamicGatt::Inventory DynamicGatt::GetInventory() { return WebStatusTest::gattInventory; }
+bool DynamicGatt::Ready() { return WebStatusTest::dynamicGattReady; }
 
 FixtureGatt::WebResult FixtureGatt::GetValues()
 {
@@ -528,6 +579,29 @@ int main()
 	if (!require(!statusValid(&publish, false, false, true), "mixed GATT and advertising data is rejected")) return 1;
 	std::puts("PASS: extracted operation serializers and status validator accept valid GATT shapes and reject malformed shapes");
 
+	constexpr std::array<WorkerOperation, 3> dynamicOperations{{
+		WorkerOperation::AddService, WorkerOperation::RemoveService, WorkerOperation::SendServiceChanged}};
+	constexpr std::array<const char*, 3> dynamicOperationNames{{"addService", "removeService", "sendServiceChanged"}};
+	for (size_t index = 0; index < dynamicOperations.size(); ++index)
+	{
+		WorkerRecord record;
+		record.id = {0x123456789ABCDEF0ULL, static_cast<uint32_t>(20 + index)};
+		record.command.operation = dynamicOperations[index];
+		std::strncpy(record.command.target, "services", sizeof(record.command.target) - 1);
+		record.state = SlotState::Done;
+		record.result = index == 2 ? Result::Dispatched : Result::Applied;
+		std::strncpy(record.detail, "Dynamic GATT operation completed.", sizeof(record.detail) - 1);
+		cJSON* serialized = WebStatusTest::operationRecordJson(record);
+		const cJSON* operation = cJSON_GetObjectItemCaseSensitive(serialized, "operation");
+		const bool hasNoData = serialized && cJSON_IsString(operation) &&
+			std::strcmp(operation->valuestring, dynamicOperationNames[index]) == 0 &&
+			!cJSON_GetObjectItemCaseSensitive(serialized, "data");
+		cJSON_Delete(serialized);
+		if (!require(hasNoData && statusValid(&record),
+			"dynamic GATT operation status uses the existing operation record without OperationData")) return 1;
+	}
+	std::puts("PASS: add/remove/Service Changed status records omit the OperationData family");
+
 	const auto data = publish.data;
 	WebStatusTest::armAllocationFailure(1);
 	cJSON* failedData = WebStatusTest::operationDataJson(data);
@@ -549,6 +623,12 @@ int main()
 
 	httpd_req_t request;
 	WebStatusTest::gattSnapshotMode = WebStatusTest::GattSnapshotMode::Ready;
+	WebStatusTest::dynamicGattReady = true;
+	WebStatusTest::gattInventory = DynamicGatt::Inventory{
+		DynamicGatt::State::Ready, true,
+		{{{0, 0}, "12345678-1234-5678-1234-56789abcdef0", "12345678-1234-5678-1234-56789abcdef2", true},
+		 {{0x123456789ABCDEF0ULL, 4}, "12345678-1234-5678-1234-56789abce100", "12345678-1234-5678-1234-56789abce101", false}},
+		""};
 	WebStatusTest::armAllocationFailure(0);
 	const bool gattSnapshotSent = WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
 		WebStatusTest::response.sentJson;
@@ -566,16 +646,72 @@ int main()
 		if (!require(WebStatusTest::response.status == 500 && !WebStatusTest::response.sentJson,
 			"getGatt never returns 200 after any injected cJSON allocation failure")) return 1;
 	}
+	WebStatusTest::gattInventory.services.clear();
+	for (size_t index = 0; index < 6; ++index)
+	{
+		DynamicGatt::ServiceSnapshot service;
+		service.protectedService = index < 2;
+		service.id = service.protectedService ? ConnectionId{0, 0} :
+			ConnectionId{0x123456789ABCDEF0ULL, static_cast<uint32_t>(index - 1)};
+		char serviceTail[5]{}, characteristicTail[5]{};
+		std::snprintf(serviceTail, sizeof(serviceTail), "%04X", static_cast<unsigned>(0xE100 + index));
+		std::snprintf(characteristicTail, sizeof(characteristicTail), "%04X", static_cast<unsigned>(0xF100 + index));
+		service.serviceUuid = std::string("12345678-1234-5678-1234-56789abc") + serviceTail;
+		service.characteristicUuid = std::string("12345678-1234-5678-1234-56789abc") + characteristicTail;
+		WebStatusTest::gattInventory.services.push_back(std::move(service));
+	}
+	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
+		WebStatusTest::response.sentJson, "getGatt serializes the maximum two protected plus four temporary services")) return 1;
+	cJSON* maximumResponse = cJSON_Parse(WebStatusTest::response.json.c_str());
+	const cJSON* maximumServices = cJSON_GetObjectItemCaseSensitive(maximumResponse, "services");
+	char* maximumInventoryJson = cJSON_PrintUnformatted(maximumServices);
+	const size_t maximumInventoryBytes = maximumInventoryJson ? std::strlen(maximumInventoryJson) : 0;
+	cJSON_free(maximumInventoryJson);
+	const bool boundedMaximum = cJSON_IsArray(maximumServices) && cJSON_GetArraySize(maximumServices) == 6 &&
+		maximumInventoryBytes <= 1200 && WebStatusTest::response.json.size() < 6144;
+	cJSON_Delete(maximumResponse);
+	if (!require(boundedMaximum, "six-entry inventory stays within its 1200-byte serialization bound and existing 6144-byte stack scale")) return 1;
+	std::puts("PASS: maximum protected plus temporary service inventory remains bounded");
+	WebStatusTest::gattInventory.services = {
+		{{0, 0}, "12345678-1234-5678-1234-56789abcdef0", "12345678-1234-5678-1234-56789abcdef2", true},
+		{{0x123456789ABCDEF0ULL, 4}, "12345678-1234-5678-1234-56789abce100", "12345678-1234-5678-1234-56789abce101", false}
+	};
 	WebStatusTest::gattSnapshotMode = WebStatusTest::GattSnapshotMode::Failed;
 	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 500 &&
-		WebStatusTest::response.result == "Failed", "getGatt maps an explicit snapshot failure to HTTP 500")) return 1;
+		WebStatusTest::response.sentJson && verifyUnavailableGattSnapshot(WebStatusTest::response.json, "Ready", false, true),
+		"getGatt maps a genuine value snapshot failure to HTTP 500 with values null and inventory preserved")) return 1;
 	WebStatusTest::gattSnapshotMode = WebStatusTest::GattSnapshotMode::Busy;
-	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 409 &&
-		WebStatusTest::response.result == "Busy", "getGatt preserves retryable host contention as HTTP 409")) return 1;
+	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
+		WebStatusTest::response.sentJson && verifyUnavailableGattSnapshot(WebStatusTest::response.json, "Ready", false, true),
+		"getGatt maps retryable host contention to HTTP 200 with a null value collection")) return 1;
 	WebStatusTest::gattSnapshotMode = WebStatusTest::GattSnapshotMode::NotReady;
-	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 409 &&
-		WebStatusTest::response.result == "Busy", "getGatt preserves not-ready snapshots as HTTP 409")) return 1;
-	std::printf("PASS: extracted getGatt validates all fields and rejects failures across %zu cJSON allocations\n", gattAllocationCount);
+	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
+		WebStatusTest::response.sentJson && verifyUnavailableGattSnapshot(WebStatusTest::response.json, "Ready", false, true),
+		"getGatt maps a not-ready value snapshot to HTTP 200 with a null value collection")) return 1;
+	WebStatusTest::gattSnapshotMode = WebStatusTest::GattSnapshotMode::Ready;
+	WebStatusTest::gattInventory.available = false;
+	WebStatusTest::gattInventory.reason = "Managed GATT inventory is unavailable.";
+	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
+		WebStatusTest::response.sentJson && verifyUnavailableGattSnapshot(WebStatusTest::response.json, "Ready", true, false),
+		"getGatt preserves values while a null service inventory is marked unavailable")) return 1;
+	WebStatusTest::gattInventory.state = DynamicGatt::State::Applying;
+	WebStatusTest::dynamicGattReady = false;
+	WebStatusTest::gattSnapshotMode = WebStatusTest::GattSnapshotMode::Busy;
+	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
+		WebStatusTest::response.sentJson && verifyUnavailableGattSnapshot(WebStatusTest::response.json, "Applying", false, false),
+		"getGatt reports Applying and preserves both unavailable collections as null")) return 1;
+	WebStatusTest::gattInventory.state = DynamicGatt::State::RecoveryRequired;
+	WebStatusTest::gattInventory.reason = "Restart the device to recover the GATT database.";
+	if (!require(WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
+		WebStatusTest::response.sentJson && verifyUnavailableGattSnapshot(WebStatusTest::response.json, "RecoveryRequired", false, false),
+		"getGatt reports recovery-required state and the required action with null collections")) return 1;
+	WebStatusTest::gattInventory = DynamicGatt::Inventory{
+		DynamicGatt::State::Ready, true,
+		{{{0, 0}, "12345678-1234-5678-1234-56789abcdef0", "12345678-1234-5678-1234-56789abcdef2", true},
+		 {{0x123456789ABCDEF0ULL, 4}, "12345678-1234-5678-1234-56789abce100", "12345678-1234-5678-1234-56789abce101", false}},
+		""};
+	WebStatusTest::dynamicGattReady = true;
+	std::puts("PASS: extracted getGatt validates collection availability, HTTP mapping, state, and allocation failures");
 	WebStatusTest::gattSnapshotMode = WebStatusTest::GattSnapshotMode::Ready;
 
 	WebStatusTest::currentOperation = &publish;

@@ -611,7 +611,7 @@ async function main() {
   assert.equal(vm.runInContext("submittedFields.has('op-skipped-terminal')", context), false, 'The skipped operation snapshot should be discarded');
 
   // GATT value publication, peer limits, source identity, and polling behavior.
-  assert.doesNotMatch(html, /id="gattRestore"|gattRestore|gattBaseline|gattState|restoreValue|baselineHex/,
+  assert.doesNotMatch(html, /id="gattRestore"|gattRestore|gattBaseline|id="gattState"|restoreValue|baselineHex/,
     'Restore and baseline-only UI/API concepts should be removed');
   assert.doesNotMatch(html, /Use a shorter payload|request a larger ATT MTU|minimum required MTU/,
     'Publication-limit UI should report measurements without suggesting remedies');
@@ -627,7 +627,12 @@ async function main() {
   assert.equal(indicationBaseline.length / 2, 23);
   context.testStatus = status({connections: [peer23a, peer23b, peer517]});
   vm.runInContext('renderStatus(testStatus)', context);
-  context.testGatt = { values: [
+  const temporaryServiceId = '0123456789abcdef-00000011';
+  const dynamicServices = [
+    {serviceId: '0000000000000000-00000000', serviceUuid: '12345678-1234-5678-1234-56789abcdef0', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', protectedService: true},
+    {serviceId: temporaryServiceId, serviceUuid: '12345678-1234-5678-1234-56789abce100', characteristicUuid: '12345678-1234-5678-1234-56789abce101', protectedService: false}
+  ];
+  context.testGatt = {state: 'Ready', valuesAvailable: true, servicesAvailable: true, serviceLimit: 4, services: dynamicServices, values: [
     { targetId: '0123456789abcdef-00000001', name: 'Original notification', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', notify: true, indicate: false, currentHex: '0102', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
     { targetId: '0123456789abcdef-00000002', name: 'Original indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', notify: false, indicate: true, currentHex: indicationBaseline, maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
     { targetId: '0123456789abcdef-00000003', name: 'Temperature Scalar', serviceUuid: 'fixture', characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', notify: true, indicate: false, currentHex: 'EB00', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 }
@@ -645,7 +650,15 @@ async function main() {
   assert.equal(get('gattCurrent').textContent, '09 08', 'Observed bytes update independently from the draft');
   vm.runInContext('renderGatt(null)', context);
   assert.equal(get('gattPublish').disabled, true);
+  assert.equal(get('gattIdentity').textContent.includes('0123456789abcdef-00000001'), true, 'A transient failure preserves the last target identity');
+  assert.equal(get('gattCurrent').textContent, '09 08', 'A transient failure preserves the last value and marks it stale in the snapshot banner');
+  assert.match(get('gattSnapshotStatus').textContent, /Values: stale or unavailable/);
   assert.equal(get('gattHex').value, 'AA BB', 'A transient snapshot failure must preserve edits');
+  vm.runInContext("renderGatt({state:'Ready',valuesAvailable:false,values:null,servicesAvailable:false,services:null,serviceLimit:4,reason:'GATT host work is busy'})", context);
+  assert.equal(vm.runInContext('gattValues.length', context), 3, 'Null values preserve the prior collection in memory');
+  assert.match(get('gattInventoryStatus').textContent, /Stale service inventory/);
+  assert.equal(get('gattServiceTable').children.length, 1, 'Null inventory keeps the prior rows visibly stale');
+  assert.equal(get('gattServiceUuid').value, '', 'Snapshot polling does not overwrite unfinished service input');
   vm.runInContext('renderGatt(testGatt)', context);
   assert.equal(get('gattHex').value, 'AA BB', 'Recovery must also preserve the draft');
 
@@ -843,6 +856,130 @@ async function main() {
   assert.match(get('errorDetail').textContent, /Connection details are refreshing; server-reported peer data is authoritative and page peer addresses are not attributed/);
   assert.doesNotMatch(get('errorDetail').textContent, /33:44:55:66:77:88/);
   assert.equal(gattPosts.length, 4, 'Only valid payloads and the stale-snapshot check reach HTTP');
+  // Dynamic GATT controls preserve the existing worker/API flow and readiness boundaries.
+  const dynamicSnapshot = overrides => ({
+    ...context.testGatt,
+    state: 'Ready',
+    valuesAvailable: true,
+    servicesAvailable: true,
+    services: dynamicServices,
+    serviceLimit: 4,
+    ...overrides
+  });
+  const inactiveAdvertising = {...status().advertising[0], active: false, mode: 0};
+  context.testStatus = status({connections: [], advertising: [inactiveAdvertising]});
+  vm.runInContext('renderStatus(testStatus)', context);
+  context.testGatt = dynamicSnapshot({});
+  vm.runInContext('renderGatt(testGatt)', context);
+  const retainedGattIdentity = get('gattIdentity').textContent;
+  const retainedGattCurrent = get('gattCurrent').textContent;
+  const failedValueSnapshot = {...context.testGatt, valuesAvailable: false, values: null,
+    servicesAvailable: true, services: dynamicServices, reason: 'Value serializer failed; inventory remains current.'};
+  context.fetch = async url => {
+    if(url === '/api/status') return {ok: true, status: 200, json: async () => context.testStatus};
+    if(url === '/api/pairing') return {ok: true, status: 200, json: async () => ({requests: []})};
+    assert.equal(url, '/api/gatt');
+    return {ok: false, status: 500, json: async () => failedValueSnapshot};
+  };
+  vm.runInContext('polling=false', context);
+  await vm.runInContext('poll()', context);
+  assert.equal(get('gattIdentity').textContent, retainedGattIdentity, 'A valid HTTP 500 snapshot preserves the last value identity');
+  assert.equal(get('gattCurrent').textContent, retainedGattCurrent, 'A valid HTTP 500 snapshot preserves the last current bytes as stale');
+  assert.match(get('gattSnapshotStatus').textContent, /Values: stale or unavailable/);
+  assert.match(get('gattInventoryStatus').textContent, /Current inventory/);
+  assert.equal(get('gattServiceTable').children.length, 1, 'Available services remain in the current inventory table on a value snapshot failure');
+  assert.ok(dynamicServices.every(service => get('gattServiceTable').textContent.includes(service.serviceId)), 'The current inventory rows remain visible');
+  assert.equal(get('gattPublish').disabled, true, 'Failed values cannot be published');
+  assert.equal(get('gattAddService').disabled, false, 'Independent current inventory still enables structural controls');
+  assert.equal(get('errorDialog').open, true, 'The HTTP 500 is still reported while its valid body is rendered');
+  assert.match(get('errorDetail').textContent, /HTTP 500/);
+  get('errorDialog').close();
+  vm.runInContext("shownPollErrors.delete('GATT status');renderGatt(testGatt)", context);
+  assert.equal(get('gattAddService').disabled, false, 'Add is enabled with a current inventory and no peers or directed advertising');
+  assert.equal(get('gattRemoveService').disabled, false, 'A current temporary service can be selected for removal');
+  assert.equal(vm.runInContext('gattScenarios.length', context), 12, 'All eight existing scenarios and four Dynamic GATT scenarios remain');
+  get('gattScenario').value = '9'; get('gattScenario').onchange();
+  assert.match(get('gattScenarioInfo').textContent, /click Add service manually/);
+  const postsBeforePrefill = gattPosts.length;
+  get('gattPrefill').onclick();
+  assert.equal(get('gattServiceUuid').value, '12345678-1234-5678-1234-56789abce100');
+  assert.equal(get('gattCharacteristicUuid').value, '12345678-1234-5678-1234-56789abce101');
+  assert.equal(get('gattInitialValueHex').value, '01 02');
+  assert.equal(gattPosts.length, postsBeforePrefill, 'Add scenario prefill never mutates firmware');
+  context.fetch = async (url, request) => {
+    gattPosts.push({url, body: JSON.parse(request.body)});
+    return {ok: true, status: 202, json: async () => ({result: 'Queued', operationId: 'gatt-op-' + (++gattOperationSequence)})};
+  };
+  await vm.runInContext('addGattService()', context);
+  assert.deepEqual(gattPosts.at(-1), {
+    url: '/api/gatt',
+    body: {
+      op: 'addService',
+      serviceUuid: '12345678-1234-5678-1234-56789abce100',
+      characteristicUuid: '12345678-1234-5678-1234-56789abce101',
+      valueHex: '0102'
+    }
+  }, 'Add uses the exact existing GATT route and valueHex request contract');
+  vm.runInContext("localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';", context);
+  get('gattScenario').value = '10'; get('gattScenario').onchange();
+  assert.match(get('gattScenarioInfo').textContent, /click Remove service manually/);
+  get('gattPrefill').onclick();
+  assert.equal(get('gattRemoveTarget').value, temporaryServiceId);
+  assert.equal(gattPosts.length, postsBeforePrefill + 1, 'Remove scenario prefill only selects a service');
+  await vm.runInContext('removeGattService()', context);
+  assert.deepEqual(gattPosts.at(-1), {url: '/api/gatt', body: {op: 'removeService', serviceId: temporaryServiceId}});
+  vm.runInContext("localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';", context);
+
+  vm.runInContext('gattReadyObserved=false', context);
+  vm.runInContext("renderGatt({state:'Ready',valuesAvailable:false,values:null,servicesAvailable:false,services:null,serviceLimit:4,reason:'Fixture is not ready.'})", context);
+  assert.equal(get('gattSendServiceChanged').disabled, true, 'Lifecycle Ready alone does not prove initial fixture readiness');
+  assert.match(get('gattSnapshotStatus').textContent, /Fixture is not ready/);
+
+  context.testStatus = status({connections: [peer517], advertising: [inactiveAdvertising]});
+  vm.runInContext('renderStatus(testStatus)', context);
+  context.testGatt = dynamicSnapshot({valuesAvailable:false,values:null,servicesAvailable:true,reason:'Value snapshot is busy.'});
+  vm.runInContext('renderGatt(testGatt)', context);
+  assert.equal(get('gattPublish').disabled, true, 'Value publication requires a current value snapshot');
+  assert.equal(get('gattAddService').disabled, true, 'Structural changes are disabled while a peer is connected');
+  assert.equal(get('gattRemoveService').disabled, true, 'Removal is disabled while a peer is connected');
+  assert.equal(get('gattSendServiceChanged').disabled, false, 'Service Changed remains available while connected with observed GATT readiness');
+  get('gattScenario').value = '8'; get('gattScenario').onchange();
+  assert.match(get('gattScenarioInfo').textContent, /Keep a BLE central connected/);
+  await vm.runInContext('sendGattServiceChanged()', context);
+  assert.deepEqual(gattPosts.at(-1), {url: '/api/gatt', body: {op: 'sendServiceChanged'}});
+  vm.runInContext("localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';", context);
+
+  context.testStatus = status({connections: [], advertising: [{...inactiveAdvertising, active: true, mode: 4}]});
+  vm.runInContext('renderStatus(testStatus)', context);
+  assert.equal(get('gattAddService').disabled, true, 'Add is disabled during active directed advertising');
+  assert.equal(get('gattRemoveService').disabled, true, 'Remove is disabled during active directed advertising');
+
+  const recoveryOperation = {
+    operationId: 'recovery-op', operation: 'addService', target: 'services', state: 'Done', result: 'Failed',
+    detail: 'Restart the device to recover the GATT database.', error: {code: 'gatt_recovery_required'}
+  };
+  context.testStatus = status({connections: [], advertising: [inactiveAdvertising], lastOperation: recoveryOperation});
+  vm.runInContext('renderStatus(testStatus)', context);
+  const unfinishedServiceUuid = get('gattServiceUuid').value;
+  vm.runInContext("renderGatt({state:'RecoveryRequired',valuesAvailable:false,values:null,servicesAvailable:false,services:null,serviceLimit:4,reason:'Restart the device to recover the GATT database.'})", context);
+  assert.match(get('gattSnapshotStatus').textContent, /Restart the device to recover the GATT database/);
+  assert.match(get('gattInventoryStatus').textContent, /previous entries are hidden/);
+  assert.equal(get('gattServiceTable').children.length, 0, 'Recovery never presents old inventory as current');
+  assert.equal(get('gattAddService').disabled, true);
+  assert.equal(get('gattRemoveService').disabled, true);
+  assert.equal(get('gattSendServiceChanged').disabled, true);
+  assert.equal(get('gattServiceUuid').value, unfinishedServiceUuid, 'Recovery preserves unfinished form input');
+
+  const restoreWarningOperation = {
+    operationId: 'restore-op', operation: 'addService', target: 'services', state: 'Done', result: 'Applied',
+    detail: 'Advertising restoration was incomplete.', error: {code: 'advertising_restore_incomplete'}
+  };
+  context.testStatus = status({connections: [], advertising: [inactiveAdvertising], lastOperation: restoreWarningOperation});
+  vm.runInContext('renderStatus(testStatus)', context);
+  context.testGatt = dynamicSnapshot({});
+  vm.runInContext('renderGatt(testGatt)', context);
+  assert.match(get('gattSnapshotStatus').textContent, /Warning: advertising restoration was incomplete/);
+  assert.match(get('gattInventoryStatus').textContent, /Current inventory/);
   console.log('web UI regression checks passed (including GATT controls and scenarios)');
 }
 

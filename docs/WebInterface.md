@@ -73,13 +73,31 @@ GATT Test Scenarios contains static instructions and expected bytes for User Des
 
 The additive service is `12345678-1234-5678-1234-56789abcdf00`; it is discoverable after connecting but not advertised. Temperature Scalar is `...df05` (initial `EB 00`, sint16/exponent -1, 23.5 degrees Celsius). Subscribe and write acknowledged `01` to `...df07` to request its current stored bytes, including in non-Web builds. The [fixture specification](Completed/DescriptorDrivenGattFixture/Ble.Peripheral.DescriptorDrivenGattFixture.Plan.md) documents the seven targets and metadata; its historical Restore contract was superseded by the owner-requested removal described here.
 
-The authenticated API provides `GET /api/gatt` snapshots and one deferred `POST /api/gatt` command:
+The authenticated API exposes GET /api/gatt snapshots and POST /api/gatt operations. This example publishes characteristic bytes:
 
 ```json
 {"op":"publishValue","targetId":"<current opaque targetId>","hex":"F500"}
 ```
 
 Snapshots include `minimumPeerMtu` and `connectedPeerCount` from the same host observation as `publicationLimit`. Zero peers is distinct from a connected peer whose MTU is not yet available. Use the current snapshot's target identity and normal CSRF header. Poll `/api/status` for the operation ID; `storageVerified`, `publicationAttempted`, and `publicationDispatched` distinguish outcomes. Invalid identity/hex/length cannot select an arbitrary attribute. Host execution rechecks current bounds and reports actual sizes on a late rejection. An unstarted timed-out request is canceled; contention does not publish automatically later. Transport delivery and live HTTP/security still require device acceptance.
+
+### Temporary services and Service Changed
+
+The Temporary services section lists protected fixtures and up to four temporary services. Each temporary service has one READ-only characteristic. Enter canonical 128-bit service and characteristic UUIDs and an initial hexadecimal value of at most 256 decoded bytes; an empty value is allowed. Choose Add service to register it, or select a temporary service and choose Remove service. Built-in services cannot be removed. Temporary services are volatile, are not added to advertising, and disappear after reboot.
+
+Adding or removing a service requires every peer to be disconnected and directed advertising to be stopped. The removal selector and Add/Remove buttons are disabled while a peer is connected or directed advertising is active. The device rechecks the conditions when it handles the request. After a structural change, reconnect and explicitly rediscover services on the BLE central.
+
+API clients use POST /api/gatt with the same authentication and CSRF requirements as other operations. Add requires valueHex, which may be empty; use the current services inventory to obtain a serviceId for Remove. Each line is a separate request.
+
+    {"op":"addService","serviceUuid":"12345678-1234-5678-1234-56789abce100","characteristicUuid":"12345678-1234-5678-1234-56789abce101","valueHex":"0102"}
+    {"op":"removeService","serviceId":"<current boot-scoped serviceId>"}
+    {"op":"sendServiceChanged"}
+
+GET /api/gatt includes the existing values plus state, services, serviceLimit, valuesAvailable, servicesAvailable, and reason. The values and services collections can be unavailable independently; the unavailable collection is null with a reason. Do not treat null as an empty collection. servicesAvailable is true only when GATT is Ready, fixture readiness is true, and the managed inventory is valid. valuesAvailable requires a safe successful host snapshot. Busy or NotReady value snapshots return HTTP 200 with valuesAvailable false; a genuine failed snapshot returns HTTP 500.
+
+Send Service Changed can be used while connected when GATT is Ready. It dispatches an indication for the full attribute range without changing the database. A Dispatched result means the server called NimBLE's send API; it does not prove radio delivery, client receipt, or acknowledgement.
+
+When a GATT inventory or value snapshot is unavailable, the page labels the last observation stale and preserves unfinished input. It disables controls that need current data. RecoveryRequired shows the restart action and disables GATT mutations. A partial advertising-restoration warning refreshes the inventory and remains visible.
 
 ### Source revision
 

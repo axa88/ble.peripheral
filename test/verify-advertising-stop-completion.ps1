@@ -47,7 +47,7 @@ if ($advertising.Contains('stopCompletionGenerations_[instanceId] = stopGenerati
 	throw 'Spontaneous ADV_COMPLETE callback still publishes an explicit stop generation.'
 }
 $stopReturnIndex = $advertising.IndexOf('stopSucceeded = !wasActive || adv->stop(instanceId);', [StringComparison]::Ordinal)
-$inactiveStateIndex = $advertising.IndexOf('const bool inactive = !adv->isActive(instanceId);', [StringComparison]::Ordinal)
+$inactiveStateIndex = $advertising.IndexOf('const bool inactive = !hostAdvertisingActive(instanceId);', [StringComparison]::Ordinal)
 $publicationIndex = $advertising.IndexOf('publishExplicitStopCompletionLocked(instanceId, stopGeneration, stopSucceeded, inactive)', [StringComparison]::Ordinal)
 if ($stopReturnIndex -lt 0 -or $inactiveStateIndex -lt $stopReturnIndex -or $publicationIndex -lt $inactiveStateIndex) {
 	throw 'Explicit stop completion does not require stop-return success and verified inactive state before publication.'

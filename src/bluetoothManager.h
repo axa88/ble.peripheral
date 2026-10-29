@@ -97,6 +97,8 @@ public:
 
 	// Expose if needed
 	NimBLEServer* Server() const noexcept;
+	// Called on the BLE host with DynamicGatt entry ownership.
+	bool SendServiceChangedIndication();
 
 private:
 	BluetoothManager();

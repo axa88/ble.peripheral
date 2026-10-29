@@ -1,0 +1,350 @@
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+namespace FixtureGatt {
+inline constexpr char ServiceUuid[] = "@@SERVICE_UUID@@";
+inline constexpr char ExistingCharacteristicUuid[] = "@@EXISTING_CHARACTERISTIC_UUID@@";
+inline constexpr char NotificationCharacteristicUuid[] = "@@NOTIFICATION_CHARACTERISTIC_UUID@@";
+inline constexpr char IndicationCharacteristicUuid[] = "@@INDICATION_CHARACTERISTIC_UUID@@";
+inline constexpr char CustomDescriptorUuid[] = "@@CUSTOM_DESCRIPTOR_UUID@@";
+inline constexpr char DescriptorServiceUuid[] = "@@DESCRIPTOR_SERVICE_UUID@@";
+inline constexpr char TemperatureUuid[] = "@@TEMPERATURE_UUID@@";
+}
+namespace NIMBLE_PROPERTY {
+constexpr uint16_t READ=0x02, WRITE=0x08, NOTIFY=0x10, INDICATE=0x20;
+}
+constexpr uint16_t BLE_ATT_F_READ=0x01;
+constexpr int BLE_HS_ENOENT=2;
+
+class NimBLEUUID {
+public:
+    explicit NimBLEUUID(uint16_t value) : short_(true), value16_(value) {}
+    explicit NimBLEUUID(const char* value) : short_(false), value128_(value) {}
+    const NimBLEUUID* getBase() const { return this; }
+    std::string key() const { return short_ ? "16:"+std::to_string(value16_) : "128:"+value128_; }
+    friend bool operator==(const NimBLEUUID& a, const NimBLEUUID& b) { return a.key()==b.key(); }
+private:
+    bool short_;
+    uint16_t value16_{};
+    std::string value128_;
+};
+class NimBLEService;
+class NimBLECharacteristic;
+class NimBLEDescriptor {
+public:
+    NimBLEDescriptor(NimBLECharacteristic* characteristic, NimBLEUUID uuid, uint16_t handle,
+                     uint16_t permissions, std::vector<uint8_t> value)
+        : characteristic_(characteristic), uuid_(std::move(uuid)), handle_(handle),
+          permissions_(permissions), value_(std::move(value)) {}
+    uint16_t getHandle() const { return handle_; }
+    uint16_t getProperties() const { return permissions_; }
+    const std::vector<uint8_t>& getValue() const { return value_; }
+    void setValue(std::vector<uint8_t> value) { value_=std::move(value); }
+    NimBLECharacteristic* getCharacteristic() const { return characteristic_; }
+    const NimBLEUUID& getUUID() const { return uuid_; }
+private:
+    NimBLECharacteristic* characteristic_;
+    NimBLEUUID uuid_;
+    uint16_t handle_;
+    uint16_t permissions_;
+    std::vector<uint8_t> value_;
+};
+class NimBLEService {
+public:
+    NimBLEService(const char* uuid, uint16_t handle) : uuid_(uuid), handle_(handle) {}
+    uint16_t getHandle() const { return handle_; }
+    const NimBLEUUID& getUUID() const { return uuid_; }
+    const std::vector<NimBLECharacteristic*>& getCharacteristics() const { return characteristics_; }
+    void addCharacteristic(NimBLECharacteristic* characteristic) { characteristics_.push_back(characteristic); }
+private:
+    NimBLEUUID uuid_;
+    uint16_t handle_;
+    std::vector<NimBLECharacteristic*> characteristics_;
+};
+class NimBLEServer {
+public:
+    std::vector<NimBLEService*> m_svcVec;
+    NimBLEService* getServiceByUUID(const char* uuid) const {
+        const NimBLEUUID wanted(uuid);
+        for(auto* service:m_svcVec) if(service && service->getUUID()==wanted) return service;
+        return nullptr;
+    }
+    void addService(NimBLEService* service) { m_svcVec.push_back(service); }
+};
+class NimBLECharacteristic {
+public:
+    NimBLECharacteristic(NimBLEService* service, const char* uuid, uint16_t handle,
+                         uint16_t properties, std::vector<uint8_t> value)
+        : service_(service), uuid_(uuid), handle_(handle), properties_(properties), value_(std::move(value)) {}
+    NimBLEService* getService() const { return service_; }
+    const NimBLEUUID& getUUID() const { return uuid_; }
+    uint16_t getHandle() const { return handle_; }
+    uint16_t getProperties() const { return properties_; }
+    const std::vector<uint8_t>& getValue() const { return value_; }
+    void setValue(std::vector<uint8_t> value) { value_=std::move(value); }
+    void addDescriptor(NimBLEDescriptor* descriptor) { descriptors_.push_back(descriptor); }
+    NimBLEDescriptor* getDescriptorByUUID(const NimBLEUUID& uuid) const {
+        for (auto* descriptor : descriptors_) if (descriptor && descriptor->getUUID()==uuid) return descriptor;
+        return nullptr;
+    }
+private:
+    NimBLEService* service_;
+    NimBLEUUID uuid_;
+    uint16_t handle_;
+    uint16_t properties_;
+    std::vector<uint8_t> value_;
+    std::vector<NimBLEDescriptor*> descriptors_;
+};
+
+namespace NativeDb {
+using CharKey=std::pair<std::string,std::string>;
+using DescKey=std::tuple<std::string,std::string,std::string>;
+struct Characteristic { uint16_t declaration=0, value=0, properties=0; };
+static std::map<std::string,uint16_t> services;
+static std::map<CharKey,Characteristic> characteristics;
+static std::map<DescKey,uint16_t> descriptors;
+static std::map<uint16_t,std::vector<uint8_t>> values;
+static void clear() { services.clear(); characteristics.clear(); descriptors.clear(); values.clear(); }
+}
+int ble_gatts_find_svc(const NimBLEUUID* uuid, uint16_t* handle) {
+    auto it=NativeDb::services.find(uuid->key()); if(it==NativeDb::services.end()) return BLE_HS_ENOENT;
+    if(handle) *handle=it->second;
+    return 0;
+}
+int ble_gatts_find_chr(const NimBLEUUID* service, const NimBLEUUID* characteristic,
+                       uint16_t* declaration, uint16_t* value) {
+    auto it=NativeDb::characteristics.find({service->key(),characteristic->key()});
+    if(it==NativeDb::characteristics.end()) return BLE_HS_ENOENT;
+    if(declaration) *declaration=it->second.declaration;
+    if(value) *value=it->second.value;
+    return 0;
+}
+int ble_gatts_find_dsc(const NimBLEUUID* service, const NimBLEUUID* characteristic,
+                       const NimBLEUUID* descriptor, uint16_t* handle) {
+    auto it=NativeDb::descriptors.find({service->key(),characteristic->key(),descriptor->key()});
+    if(it==NativeDb::descriptors.end()) return BLE_HS_ENOENT;
+    if(handle) *handle=it->second;
+    return 0;
+}
+
+namespace DynamicGatt {
+namespace {
+static NimBLEServer* activeServer=nullptr;
+NimBLEServer* server() { return activeServer; }
+void setServer(NimBLEServer* value) { activeServer=value; }
+constexpr std::array<uint16_t, 5> descriptorUuids{{0x2901, 0x2904, 0x2905, 0x2906, 0}};
+@@PROTECTED_SERVICES@@
+bool readEquals(uint16_t handle, const uint8_t* bytes, size_t length) {
+    auto it=NativeDb::values.find(handle);
+    if(it==NativeDb::values.end() || it->second.size()!=length) return false;
+    return !length || std::equal(it->second.begin(),it->second.end(),bytes);
+}
+bool nativeCharacteristic(NimBLEService* service, NimBLECharacteristic* characteristic) {
+    if(!service || !characteristic || characteristic->getService()!=service || !characteristic->getHandle()) return false;
+    uint16_t value=0;
+    if(ble_gatts_find_chr(service->getUUID().getBase(),characteristic->getUUID().getBase(),nullptr,&value) ||
+       value!=characteristic->getHandle()) return false;
+    auto it=NativeDb::characteristics.find({service->getUUID().key(),characteristic->getUUID().key()});
+    if(it==NativeDb::characteristics.end() || it->second.properties!=characteristic->getProperties()) return false;
+    const auto& current=characteristic->getValue();
+    return !(characteristic->getProperties() & NIMBLE_PROPERTY::READ) || readEquals(value,current.data(),current.size());
+}
+@@IDENTITY_STRUCTS@@
+}
+}
+
+class FixtureModel {
+public:
+    NimBLEServer nativeServer;
+    NimBLEService fixture{FixtureGatt::ServiceUuid,14};
+    NimBLEService descriptorFixture{FixtureGatt::DescriptorServiceUuid,24};
+    NimBLECharacteristic existing{&fixture,FixtureGatt::ExistingCharacteristicUuid,16,
+        NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::WRITE,{1,2}};
+    NimBLECharacteristic notify{&fixture,FixtureGatt::NotificationCharacteristicUuid,18,
+        NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::WRITE|NIMBLE_PROPERTY::NOTIFY,{3,4}};
+    NimBLECharacteristic indicate{&fixture,FixtureGatt::IndicationCharacteristicUuid,22,
+        NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::WRITE|NIMBLE_PROPERTY::INDICATE,{5,6}};
+    NimBLECharacteristic temperature{&descriptorFixture,FixtureGatt::TemperatureUuid,26,
+        NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::NOTIFY,{0x21,0x43}};
+    NimBLECharacteristic range{&descriptorFixture,"12345678-1234-5678-1234-56789abcdf03",31,
+        NIMBLE_PROPERTY::READ,{0x10,0xF0}};
+    NimBLECharacteristic aggregate{&descriptorFixture,"12345678-1234-5678-1234-56789abcdf04",35,
+        NIMBLE_PROPERTY::READ,{6,7,8}};
+    NimBLEDescriptor custom{&notify,NimBLEUUID(FixtureGatt::CustomDescriptorUuid),20,
+        BLE_ATT_F_READ|0x02,{0xC1,0xC2}};
+    NimBLEDescriptor tempName{&temperature,NimBLEUUID(uint16_t{0x2901}),28,BLE_ATT_F_READ,{'T','e','m','p'}};
+    NimBLEDescriptor tempFormat{&temperature,NimBLEUUID(uint16_t{0x2904}),29,BLE_ATT_F_READ,{0x0E,0,0x2F,0x27,1,0,0}};
+    NimBLEDescriptor rangeName{&range,NimBLEUUID(uint16_t{0x2901}),32,BLE_ATT_F_READ,{'R','a','n','g','e'}};
+    NimBLEDescriptor rangeValid{&range,NimBLEUUID(uint16_t{0x2906}),33,BLE_ATT_F_READ,{0,1,0,2}};
+    NimBLEDescriptor aggregateName{&aggregate,NimBLEUUID(uint16_t{0x2901}),36,BLE_ATT_F_READ,{'A','g','g'}};
+    NimBLEDescriptor aggregateDescriptor{&aggregate,NimBLEUUID(uint16_t{0x2905}),37,BLE_ATT_F_READ,{1,0,2,0}};
+
+    FixtureModel() {
+        nativeServer.addService(&fixture); nativeServer.addService(&descriptorFixture);
+        fixture.addCharacteristic(&existing); fixture.addCharacteristic(&notify); fixture.addCharacteristic(&indicate);
+        descriptorFixture.addCharacteristic(&temperature); descriptorFixture.addCharacteristic(&range); descriptorFixture.addCharacteristic(&aggregate);
+        notify.addDescriptor(&custom);
+        temperature.addDescriptor(&tempName); temperature.addDescriptor(&tempFormat);
+        range.addDescriptor(&rangeName); range.addDescriptor(&rangeValid);
+        aggregate.addDescriptor(&aggregateName); aggregate.addDescriptor(&aggregateDescriptor);
+        DynamicGatt::setServer(&nativeServer);
+        rebuildNative();
+    }
+    void rebuildNative() {
+        NativeDb::clear();
+        const NimBLEUUID gap(uint16_t{0x1800}), name(uint16_t{0x2A00}), appearance(uint16_t{0x2A01});
+        const NimBLEUUID gatt(uint16_t{0x1801}), changed(uint16_t{0x2A05}), cccd(uint16_t{0x2902});
+        NativeDb::services[gap.key()]=1; NativeDb::services[gatt.key()]=6;
+        NativeDb::characteristics[{gap.key(),name.key()}]={2,3,NIMBLE_PROPERTY::READ};
+        NativeDb::characteristics[{gap.key(),appearance.key()}]={4,5,NIMBLE_PROPERTY::READ};
+        NativeDb::characteristics[{gatt.key(),changed.key()}]={7,8,NIMBLE_PROPERTY::INDICATE};
+        NativeDb::characteristics[{gatt.key(),NimBLEUUID(uint16_t{0x2B3A}).key()}]={10,11,NIMBLE_PROPERTY::READ};
+        NativeDb::characteristics[{gatt.key(),NimBLEUUID(uint16_t{0x2B29}).key()}]={12,13,NIMBLE_PROPERTY::READ};
+        NativeDb::descriptors[{gatt.key(),changed.key(),cccd.key()}]=9;
+        addService(&fixture);
+        addService(&descriptorFixture);
+        addCharacteristic(fixture,existing,15,16);
+        addCharacteristic(fixture,notify,17,18,19);
+        addCharacteristic(fixture,indicate,21,22,23);
+        addCharacteristic(descriptorFixture,temperature,25,26,27);
+        addCharacteristic(descriptorFixture,range,30,31);
+        addCharacteristic(descriptorFixture,aggregate,34,35);
+        addDescriptor(fixture,notify,custom);
+        addDescriptor(descriptorFixture,temperature,tempName); addDescriptor(descriptorFixture,temperature,tempFormat);
+        addDescriptor(descriptorFixture,range,rangeName); addDescriptor(descriptorFixture,range,rangeValid);
+        addDescriptor(descriptorFixture,aggregate,aggregateName); addDescriptor(descriptorFixture,aggregate,aggregateDescriptor);
+        NativeDb::values[3]={'D','e','v','i','c','e'};
+        NativeDb::values[5]={0,0}; NativeDb::values[8]={0,0,0,0};
+        NativeDb::values[11]={0}; NativeDb::values[13]={0};
+    }
+private:
+    static void addService(NimBLEService* service) { NativeDb::services[service->getUUID().key()]=service->getHandle(); }
+    static void addCharacteristic(NimBLEService& service,NimBLECharacteristic& characteristic,
+                                  uint16_t declaration,uint16_t value,uint16_t cccd=0) {
+        const auto sk=service.getUUID().key(), ck=characteristic.getUUID().key();
+        NativeDb::characteristics[{sk,ck}]={declaration,value,characteristic.getProperties()};
+        NativeDb::values[value]=characteristic.getValue();
+        if(cccd) NativeDb::descriptors[{sk,ck,NimBLEUUID(uint16_t{0x2902}).key()}]=cccd;
+    }
+    static void addDescriptor(NimBLEService& service,NimBLECharacteristic& characteristic,NimBLEDescriptor& descriptor) {
+        NativeDb::descriptors[{service.getUUID().key(),characteristic.getUUID().key(),descriptor.getUUID().key()}]=descriptor.getHandle();
+        NativeDb::values[descriptor.getHandle()]=descriptor.getValue();
+    }
+};
+
+static int checks=0, failures=0;
+static void check(bool ok,const char* label) {
+    ++checks; std::cout<<(ok?"PASS ":"FAIL ")<<label<<"\\n"; if(!ok) ++failures;
+}
+static DynamicGatt::FixtureIdentity capture(FixtureModel& model) {
+    (void)model;
+    DynamicGatt::FixtureIdentity identity;
+    check(identity.capture(),"complete fixture/GAP/GATT topology captures");
+    return identity;
+}
+static void testRoundTripAndRuntimeValues() {
+    FixtureModel model;
+    model.temperature.setValue({0xB1,0xB2,0xB3});
+    model.tempFormat.setValue({0x55,0x66,0x77});
+    model.rebuildNative();
+    auto identity=capture(model);
+    check(identity.cccds.size()==3,"all static notify/indicate CCCDs are captured");
+    model.rebuildNative();
+    check(identity.verify(),"unchanged rebuilt native topology and live values verify");
+}
+static void testGapIdentities() {
+    FixtureModel missing; NativeDb::services.erase(NimBLEUUID(uint16_t{0x1800}).key());
+    DynamicGatt::FixtureIdentity absent;
+    check(!absent.capture(),"capture fails when the GAP service is absent");
+
+    FixtureModel movedService; auto serviceId=capture(movedService);
+    NativeDb::services[NimBLEUUID(uint16_t{0x1800}).key()]=0x60;
+    check(!serviceId.verify(),"verify detects a moved GAP service handle");
+
+    FixtureModel movedName; auto nameId=capture(movedName);
+    auto nameKey=std::make_pair(NimBLEUUID(uint16_t{0x1800}).key(),NimBLEUUID(uint16_t{0x2A00}).key());
+    NativeDb::characteristics[nameKey].value=0x61;
+    check(!nameId.verify(),"verify detects a moved GAP Device Name characteristic");
+
+    FixtureModel movedAppearance; auto appearanceId=capture(movedAppearance);
+    auto appearanceKey=std::make_pair(NimBLEUUID(uint16_t{0x1800}).key(),NimBLEUUID(uint16_t{0x2A01}).key());
+    NativeDb::characteristics[appearanceKey].value=0x62;
+    check(!appearanceId.verify(),"verify detects a moved GAP Appearance characteristic");
+}
+static void testGattFeatureIdentity() {
+    const auto gattKey=NimBLEUUID(uint16_t{0x1801}).key();
+    const auto serverKey=std::make_pair(gattKey,NimBLEUUID(uint16_t{0x2B3A}).key());
+    const auto clientKey=std::make_pair(gattKey,NimBLEUUID(uint16_t{0x2B29}).key());
+    FixtureModel missing; NativeDb::characteristics.erase(serverKey);
+    DynamicGatt::FixtureIdentity absent;
+    check(!absent.capture(),"capture fails when the mandatory GATT Server Features characteristic is absent");
+
+    FixtureModel missingClient; NativeDb::characteristics.erase(clientKey);
+    DynamicGatt::FixtureIdentity absentClient;
+    check(!absentClient.capture(),"capture fails when mandatory GATT Client Supported Features is absent");
+
+    FixtureModel movedServer; auto serverId=capture(movedServer);
+    ++NativeDb::characteristics[serverKey].value;
+    check(!serverId.verify(),"verify detects a moved GATT Server Features handle");
+
+    FixtureModel movedClient; auto clientId=capture(movedClient);
+    ++NativeDb::characteristics[clientKey].value;
+    check(!clientId.verify(),"verify detects a moved GATT Client Supported Features handle");
+}
+static void testCccdIdentity() {
+    FixtureModel missing; auto missingKey=NativeDb::DescKey{NimBLEUUID(FixtureGatt::ServiceUuid).key(),NimBLEUUID(FixtureGatt::NotificationCharacteristicUuid).key(),NimBLEUUID(uint16_t{0x2902}).key()};
+    NativeDb::descriptors.erase(missingKey);
+    DynamicGatt::FixtureIdentity absent;
+    check(!absent.capture(),"capture fails if a fixture CCCD is missing");
+
+    FixtureModel notify; auto notifyId=capture(notify);
+    ++NativeDb::descriptors[missingKey];
+    check(!notifyId.verify(),"verify detects a moved notification CCCD handle");
+
+    FixtureModel indicate; auto indicateId=capture(indicate);
+    auto indicateKey=NativeDb::DescKey{NimBLEUUID(FixtureGatt::ServiceUuid).key(),NimBLEUUID(FixtureGatt::IndicationCharacteristicUuid).key(),NimBLEUUID(uint16_t{0x2902}).key()};
+    ++NativeDb::descriptors[indicateKey];
+    check(!indicateId.verify(),"verify detects a moved indication CCCD handle");
+
+    FixtureModel missingChanged; auto changedKey=NativeDb::DescKey{NimBLEUUID(uint16_t{0x1801}).key(),NimBLEUUID(uint16_t{0x2A05}).key(),NimBLEUUID(uint16_t{0x2902}).key()};
+    NativeDb::descriptors.erase(changedKey);
+    DynamicGatt::FixtureIdentity absentChanged;
+    check(!absentChanged.capture(),"capture fails if Service Changed CCCD is missing");
+
+    FixtureModel serviceChanged; auto changedId=capture(serviceChanged);
+    ++NativeDb::descriptors[changedKey];
+    check(!changedId.verify(),"verify detects a moved Service Changed CCCD handle");
+}
+static void testFixtureAttributes() {
+    FixtureModel characteristic; auto characteristicId=capture(characteristic);
+    auto chrKey=NativeDb::CharKey{NimBLEUUID(FixtureGatt::DescriptorServiceUuid).key(),NimBLEUUID(FixtureGatt::TemperatureUuid).key()};
+    ++NativeDb::characteristics[chrKey].value;
+    check(!characteristicId.verify(),"verify detects a moved fixture characteristic value handle");
+
+    FixtureModel descriptor; auto descriptorId=capture(descriptor);
+    auto descriptorKey=NativeDb::DescKey{NimBLEUUID(FixtureGatt::DescriptorServiceUuid).key(),NimBLEUUID(FixtureGatt::TemperatureUuid).key(),NimBLEUUID(uint16_t{0x2904}).key()};
+    ++NativeDb::descriptors[descriptorKey];
+    check(!descriptorId.verify(),"verify detects a moved fixture descriptor handle");
+
+    FixtureModel descriptorValue; auto descriptorValueId=capture(descriptorValue);
+    const auto formatHandle=NativeDb::descriptors[descriptorKey];
+    NativeDb::values[formatHandle][0]^=0x01;
+    check(!descriptorValueId.verify(),"verify detects changed native descriptor bytes");
+
+    FixtureModel characteristicValue; auto characteristicValueId=capture(characteristicValue);
+    const auto tempHandle=NativeDb::characteristics[chrKey].value;
+    NativeDb::values[tempHandle][0]^=0x01;
+    check(!characteristicValueId.verify(),"verify detects changed native characteristic bytes");
+}
+int main() {
+    testRoundTripAndRuntimeValues(); testGapIdentities(); testGattFeatureIdentity(); testCccdIdentity(); testFixtureAttributes();
+    std::cout<<checks-failures<<"/"<<checks<<" checks passed\\n";
+    return failures?1:0;
+}

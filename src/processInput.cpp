@@ -12,6 +12,7 @@
 #include <array>
 #include "bluetoothManager.h"
 #include "advertising.h"
+#include "dynamicGatt.h"
 #include <NimBLEDevice.h>
 #include <cctype>
 #include <cstddef>
@@ -210,6 +211,8 @@ namespace ProcessInput
 		if (curMode == ConsoleMode::SetAdvInterval)
 		{
 			ProcessMenu::consoleMode = ConsoleMode::Config;
+			DynamicGatt::Entry entry;
+			if (!entry) { Serial.println("[BUSY] Advertising interval change was rejected during GATT change/recovery"); return; }
 			if (trimmedLen == 0) { Serial.println("[ERR] No value, interval unchanged"); return; }
 			uint32_t ms = 0;
 			if (!parseUnsignedDecimal(s + start, s + end, UINT32_MAX, ms) || ms < 20 || ms > 10240)
@@ -279,6 +282,8 @@ namespace ProcessInput
 			Serial.println("[ERR] Additional advertising instances require extended advertising (ext-adv build)");
 			return;
 #else
+			DynamicGatt::Entry entry;
+			if (!entry) { Serial.println("[BUSY] Advertising instance add was rejected during GATT change/recovery"); return; }
 			if (trimmedLen == 0) { Serial.println("[ERR] No input, instance not added"); return; }
 
 			const char* p = s + start;
@@ -306,6 +311,8 @@ namespace ProcessInput
 		if (curMode == ConsoleMode::SelectBondTarget)
 		{
 			ProcessMenu::consoleMode = ConsoleMode::Config;
+			DynamicGatt::Entry entry;
+			if (!entry) { Serial.println("[BUSY] Advertising target update was rejected during GATT change/recovery"); return; }
 			if (trimmedLen == 0) { Serial.println("[ERR] No bond selected"); return; }
 			uint32_t index = 0;
 			if (!parseUnsignedDecimal(s + start, s + end, UINT32_MAX, index)) { Serial.println("[ERR] Bond index must be numeric"); return; }

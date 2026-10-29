@@ -50,7 +50,7 @@ function Get-SourceHashes {
 	$files = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 	foreach ($directory in @(
 		'src', 'web', 'include', 'test/firmware_revision', 'test/gatt_publication_native',
-		'test/descriptor_fixture_native', 'test/descriptor_startup_native', 'test/web_status_native'
+		'test/descriptor_fixture_native', 'test/descriptor_startup_native', 'test/web_status_native', 'test/dynamic_gatt_native', 'test/dynamic_entry_native', 'test/dynamic_recovery_native', 'test/dynamic_topology_native', 'test/dynamic_advertising_native'
 	)) {
 		$directoryPath = Join-Path $projectRoot $directory
 		if (Test-Path -LiteralPath $directoryPath -PathType Container) {
@@ -61,7 +61,8 @@ function Get-SourceHashes {
 		'.gitignore', 'platformio.ini', 'firmware-revision.json',
 		'tools/generate-web-assets.py', 'tools/firmware_revision.py',
 		'tools/pio_firmware_identity.py', 'tools/pio_firmware_identity_post.py',
-		'tools/validate-descriptor-fixture.ps1'
+		'tools/validate-descriptor-fixture.ps1', 'test/verify-advertising-stop-completion.ps1',
+        'test/verify-descriptor-fixture.py', 'test/web_ui_regression.cjs'
 	)) {
 		$path = Join-Path $projectRoot $relative.Replace('/', '\')
 		if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required source input is missing: $relative" }

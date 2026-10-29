@@ -95,3 +95,14 @@ static_assert(CONFIG_BT_NIMBLE_ROLE_BROADCASTER == 1, "WROVER broadcaster role m
 #if !defined(CONFIG_BT_NIMBLE_SM_SC) || CONFIG_BT_NIMBLE_SM_SC != 1
 #error "NimBLE secure connections must be enabled"
 #endif
+
+// Live rebuild uses the fixed-service pools and preserves the existing bond store.
+#if (defined(CONFIG_BT_NIMBLE_GATT_CACHING) && CONFIG_BT_NIMBLE_GATT_CACHING) || MYNEWT_VAL_BLE_GATT_CACHING
+#error "GATT caching must remain disabled for application-managed rebuilds"
+#endif
+#if (defined(CONFIG_BT_NIMBLE_DYNAMIC_SERVICE) && CONFIG_BT_NIMBLE_DYNAMIC_SERVICE) || MYNEWT_VAL_BLE_DYNAMIC_SERVICE
+#error "NimBLE dynamic service mode must remain disabled"
+#endif
+#ifdef NDEBUG
+#error "NimBLE reset precondition assertions must remain enabled"
+#endif

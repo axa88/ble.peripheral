@@ -227,6 +227,17 @@ namespace
 			"temperature update trigger still notifies the current scalar value");
 		ok &= check(NimBLETest::controls().counters.notifyCalls == 2 && NimBLETest::controls().counters.indicateCalls == 1,
 			"original callback and temperature trigger dispatch counts");
+
+        // A changed publishable value must survive the rebuild finalization path.
+        auto* temperature = fixtureCharacteristic(server, 4);
+        const uint8_t changed[] = {0x11, 0x22, 0x33};
+        temperature->setValue(changed, sizeof(changed));
+        ok &= check(temperature->notify(), "changed temperature value is published before rebuild");
+        ok &= check(FixtureGatt::BeginRebuild() && !FixtureGatt::Ready(), "rebuild invalidates readiness");
+        NimBLETest::controls().registrationComplete = false;
+        ok &= check(server.start(), "rebuild reassigns registered fixture handles");
+        ok &= check(FixtureGatt::FinalizeAfterRebuild() && FixtureGatt::Ready(), "changed runtime value permits rebuild finalization");
+        ok &= check(bytes(temperature) == std::vector<uint8_t>(changed, changed + sizeof(changed)), "rebuild preserves changed temperature bytes");
 		return ok;
 	}
 

@@ -187,6 +187,13 @@ namespace Advertising
 		std::string serviceUuid; // empty = none
 	};
 
+	struct RebuildSnapshot
+	{
+		std::vector<InstanceConfig> configs;
+		std::vector<uint8_t> active;
+		std::vector<uint8_t> pending;
+	};
+
 	// One-time setup of instance 0 using the legacy or extended advertising object obtained from NimBLEDevice::getAdvertising().
 	// Mirrors the existing SetupBluetooth() advertising block, but goes through the shared apply path.
 	void Setup(const InstanceConfig& config);
@@ -203,6 +210,10 @@ namespace Advertising
 	StartAllResult StartAll();
 	bool Stop(uint8_t instanceId);
 	StopAllResult StopAll();
+	// Captures stored config, host-active sets, and restart intent while the structural entry lease is held.
+	bool CaptureForRebuild(RebuildSnapshot& out);
+	// Reapplies every config, restores active sets, then re-arms eligible restart intent.
+	bool RestoreAfterRebuild(const RebuildSnapshot& snapshot);
 	bool IsActive(uint8_t instanceId);
 	// Returns false when the configuration lock is busy; on success replaces out with a bounded snapshot.
 	bool TrySnapshot(std::vector<InstanceConfig>& out);
@@ -223,6 +234,8 @@ namespace Advertising
 #if CONFIG_BT_NIMBLE_EXT_ADV
 	void OnAdvertisingStopped(uint8_t instanceId, int reason);
 #endif
+	// Re-queues saved callbacks after DynamicGatt releases its entry lease in Ready state.
+	void DrainDeferredCallbacks();
 	void CancelRestartAfterConnection(uint8_t instanceId);
 	void CancelAllRestartAfterConnection();
 

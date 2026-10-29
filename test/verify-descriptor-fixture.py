@@ -101,7 +101,7 @@ def main():
         "initial advertising starts only after successful fixture finalization",
     )
 
-    finalize = function_body(fixture, "bool Finalize()")
+    finalize = function_body(fixture, "bool finalize(bool initialSeeds)")
     schema_creation = re.search(r"\b(?:createService|createCharacteristic|createDescriptor|create2904|setCallbacks)\s*\(", finalize)
     require(schema_creation is None, "finalization only updates and verifies registered descriptor values")
     aggregate_write = finalize.find("aggregate->setValue(handles, sizeof(handles))")

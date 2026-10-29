@@ -1,0 +1,792 @@
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#ifndef CONFIG_BT_NIMBLE_EXT_ADV
+#define CONFIG_BT_NIMBLE_EXT_ADV 1
+#endif
+#ifndef CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES
+#define CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES 4
+#endif
+constexpr int BLE_HS_EPREEMPTED = -17;
+constexpr int BLE_HS_EDONE = -18;
+constexpr int pdPASS = 1;
+constexpr int pdFAIL = 0;
+constexpr int pdFALSE = 0;
+using BaseType_t = int;
+using TickType_t = unsigned;
+using TimeOut_t = int;
+inline TickType_t pdMS_TO_TICKS(unsigned value) { return value; }
+inline void vTaskSetTimeOutState(TimeOut_t*) {}
+inline int xTaskCheckForTimeOut(TimeOut_t*, TickType_t*) { return 0; }
+inline void vTaskDelay(TickType_t) {}
+
+struct FakeTimer { void (*callback)(FakeTimer*) = nullptr; bool started = false; };
+using TimerHandle_t = FakeTimer*;
+static bool failTimerCreate = false;
+static bool failTimerStart = false;
+static int liveTimers = 0;
+inline TimerHandle_t xTimerCreate(const char*, TickType_t, bool, void*, void (*callback)(TimerHandle_t))
+{
+	if (failTimerCreate) return nullptr;
+	++liveTimers;
+	return new FakeTimer{ callback, false };
+}
+inline BaseType_t xTimerStart(TimerHandle_t timer, int)
+{
+	if (failTimerStart) return pdFAIL;
+	timer->started = true;
+	return pdPASS;
+}
+inline BaseType_t xTimerStop(TimerHandle_t, int) { return pdPASS; }
+inline BaseType_t xTimerDelete(TimerHandle_t timer, int)
+{
+	if (timer) { --liveTimers; delete timer; }
+	return pdPASS;
+}
+
+struct FakeSerial
+{
+	std::deque<int> input;
+	std::vector<std::string> lines;
+	int available() const { return static_cast<int>(input.size()); }
+	int peek() const { return input.empty() ? -1 : input.front(); }
+	int read()
+	{
+		if (input.empty()) return -1;
+		int value = input.front();
+		input.pop_front();
+		return value;
+	}
+	void feed(char value) { input.push_back(static_cast<unsigned char>(value)); }
+	void println(const char* value = "") { lines.emplace_back(value ? value : ""); }
+	template <typename... Args> void printf(const char* format, Args...)
+	{
+		lines.emplace_back(format ? format : "");
+	}
+};
+static FakeSerial Serial;
+
+struct ble_npl_event;
+using ble_npl_event_fn = void (*)(ble_npl_event*);
+struct ble_npl_event { ble_npl_event_fn fn = nullptr; void* arg = nullptr; };
+static std::deque<ble_npl_event*> nimbleEvents;
+inline void ble_npl_event_init(ble_npl_event* event, ble_npl_event_fn fn, void* arg)
+{
+	event->fn = fn;
+	event->arg = arg;
+}
+inline void* ble_npl_event_get_arg(ble_npl_event* event) { return event->arg; }
+inline void* nimble_port_get_dflt_eventq() { return reinterpret_cast<void*>(1); }
+inline int ble_npl_eventq_put(void*, ble_npl_event* event)
+{
+	nimbleEvents.push_back(event);
+	return 0;
+}
+static void runOneNimbleEvent()
+{
+	assert(!nimbleEvents.empty());
+	auto* event = nimbleEvents.front();
+	nimbleEvents.pop_front();
+	assert(event->fn != nullptr);
+	event->fn(event);
+}
+
+static std::array<bool, 16> hostActive{};
+static std::array<bool, 16> wrapperActive{};
+static bool legacyActive = false;
+static bool stopSucceeds = true;
+static int stopCalls = 0;
+inline int ble_gap_ext_adv_active(uint8_t id) { return hostActive[id] ? 1 : 0; }
+#if CONFIG_BT_NIMBLE_EXT_ADV
+struct NimBLEExtAdvertising
+{
+	bool isActive(uint8_t id) const { return wrapperActive[id]; }
+	bool stop(uint8_t id)
+	{
+		++stopCalls;
+		if (stopSucceeds) hostActive[id] = false;
+		return stopSucceeds;
+	}
+};
+#else
+struct NimBLEAdvertising
+{
+	bool isAdvertising() const { return legacyActive; }
+	bool stop()
+	{
+		++stopCalls;
+		if (stopSucceeds) legacyActive = false;
+		return stopSucceeds;
+	}
+};
+#endif
+
+enum class ConsoleMode { Uninitialized, Config, SetAdvInterval, AddAdvInstance, SelectBondTarget, SelectAdvInstance };
+enum class DiscoverableMode { None, Limited, General };
+enum class AdvertisementMode { Ordinary, Directed };
+namespace Advertising
+{
+	struct InstanceConfig
+	{
+		uint8_t id = 0;
+		bool restartAfterConnection = true;
+		DiscoverableMode discoverable = DiscoverableMode::General;
+		AdvertisementMode mode = AdvertisementMode::Ordinary;
+	};
+	struct RebuildSnapshot { std::vector<InstanceConfig> configs; std::vector<uint8_t> active; std::vector<uint8_t> pending; };
+	struct StopAllResult { unsigned stopped = 0; unsigned failed = 0; };
+	inline bool modeIsDirected(AdvertisementMode mode) { return mode == AdvertisementMode::Directed; }
+	bool ApplyConfig(const InstanceConfig& config);
+	bool Start(uint8_t instanceId);
+	bool Stop(uint8_t instanceId);
+	StopAllResult StopAll();
+	bool CaptureForRebuild(RebuildSnapshot& out);
+	bool RestoreAfterRebuild(const RebuildSnapshot& snapshot);
+	void OnConnectionEstablished();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void OnAdvertisingStopped(uint8_t instanceId, int reason);
+#endif
+	void DrainDeferredCallbacks();
+	void CancelAllRestartAfterConnection();
+	bool SetInterval(uint8_t instanceId, uint32_t intervalMs);
+	bool AddDefaultInstance(uint8_t instanceId, std::string_view name);
+}
+namespace FixtureGatt
+{
+	static bool ready = true;
+	inline bool Ready() { return ready; }
+}
+namespace DynamicGatt
+{
+	enum class State { Ready, Applying, RecoveryRequired };
+	static std::atomic<State> state{ State::Ready };
+	static std::mutex entryMutex;
+	static std::atomic<unsigned> entryCount{ 0 };
+	inline State CurrentState() { return state.load(); }
+	class Entry
+	{
+	public:
+		explicit Entry(bool requireReady = true)
+		{
+			if ((!requireReady || CurrentState() == State::Ready) && entryMutex.try_lock())
+			{
+				held_ = true;
+				++entryCount;
+			}
+		}
+		~Entry()
+		{
+			if (!held_) return;
+			--entryCount;
+			entryMutex.unlock();
+			if (CurrentState() == State::Ready) Advertising::DrainDeferredCallbacks();
+		}
+		explicit operator bool() const { return held_; }
+	private:
+		bool held_ = false;
+	};
+	inline bool IsEntryHeld() { return entryCount.load() != 0; }
+}
+#if CONFIG_BT_NIMBLE_EXT_ADV
+using FakeAdvertising = NimBLEExtAdvertising;
+#else
+using FakeAdvertising = NimBLEAdvertising;
+#endif
+static FakeAdvertising fakeAdvertising;
+static FakeAdvertising* advertisingObject() { return &fakeAdvertising; }
+static int intervalCalls = 0;
+static int addInstanceCalls = 0;
+
+namespace
+{
+	std::mutex configMutex_;
+	std::map<uint8_t, Advertising::InstanceConfig> configs_;
+	bool directedActive_ = false;
+	std::optional<uint8_t> directedInstance_;
+	std::mutex restartMutex_;
+	std::map<uint8_t, TimerHandle_t> restartTimers_;
+	std::map<uint8_t, uint32_t> restartTimerGenerations_;
+	std::set<uint8_t> pendingRestartInstances_;
+	std::map<uint8_t, uint32_t> restartGenerations_;
+	constexpr uint32_t kRestartDelayMs = 5000;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	constexpr size_t kDeferredAdvertisingSlots = CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES;
+#else
+	constexpr size_t kDeferredAdvertisingSlots = 1;
+#endif
+	struct DeferredStopCallback
+	{
+		bool pending = false;
+		int reason = 0;
+		bool activeAfterCallback = false;
+		bool restartEligible = false;
+		bool clearDirected = false;
+		uint32_t intentEpoch = 0;
+	};
+	struct DeferredCallbacks
+	{
+		bool connectionEstablished = false;
+		uint32_t connectionIntentEpoch = 0;
+		std::array<DeferredStopCallback, kDeferredAdvertisingSlots> advertisingStopped{};
+		std::array<bool, kDeferredAdvertisingSlots> restartTimerPending{};
+		std::array<uint32_t, kDeferredAdvertisingSlots> restartTimerGenerations{};
+	};
+	std::array<std::atomic<uint32_t>, kDeferredAdvertisingSlots> advertisingIntentEpochs_{};
+	std::mutex deferredCallbacksMutex_;
+	DeferredCallbacks deferredCallbacks_;
+	ble_npl_event deferredCallbacksEvent_{};
+	bool deferredCallbacksEventInitialized_ = false;
+	bool deferredCallbacksEventQueued_ = false;
+	std::map<uint8_t, uint32_t> stopRequestGenerations_;
+	std::map<uint8_t, uint32_t> stopCompletionGenerations_;
+	uint32_t nextStopGeneration_ = 0;
+	constexpr uint32_t kStopCompletionTimeoutMs = 5000;
+	std::vector<uint8_t> appliedIds;
+	std::vector<uint8_t> startedIds;
+	int startCalls = 0;
+	int applyCalls = 0;
+	int failApplyId = -1;
+	bool startReturns = true;
+	bool startActivates = true;
+	bool startInstanceReturns = true;
+	void deferredAdvertisingEventHandler(ble_npl_event* event);
+	void deferConnectionEstablished();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void deferAdvertisingStopped(uint8_t instanceId, int reason, bool activeAfterCallback, bool restartEligible, bool clearDirected);
+	void processAdvertisingStopped(uint8_t instanceId, int reason, bool activeAfterCallback, bool restartEligible, bool clearDirected);
+#endif
+	void deferRestartTimer(uint8_t instanceId, uint32_t generation);
+	void processRestartTimer(uint8_t instanceId, uint32_t generation);
+	void queueDeferredAdvertisingEventIfReady();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	NimBLEExtAdvertising* Adv() { return advertisingObject(); }
+#else
+	NimBLEAdvertising* Adv() { return advertisingObject(); }
+	void restoreLegacyOrdinaryLocked() {}
+#endif
+	void restartTimerCallback(TimerHandle_t timer) { (void)timer; }
+	bool startInstanceLocked(uint8_t instanceId)
+	{
+		++startCalls;
+		startedIds.push_back(instanceId);
+		if (startInstanceReturns) hostActive[instanceId] = true;
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+		if (instanceId == 0 && startInstanceReturns) legacyActive = true;
+#endif
+		return startInstanceReturns;
+	}
+	void clearDirectedStateLocked()
+	{
+		directedActive_ = false;
+		directedInstance_.reset();
+	}
+
+	@@ADVERTISING_HELPERS@@
+
+	static void resetAdvertisingState()
+	{
+		for (auto [id, timer] : restartTimers_)
+		{
+			(void)id;
+			xTimerStop(timer, 0);
+			xTimerDelete(timer, 0);
+		}
+		restartTimers_.clear();
+		restartTimerGenerations_.clear();
+		configs_.clear();
+		directedActive_ = false;
+		directedInstance_.reset();
+		pendingRestartInstances_.clear();
+		restartGenerations_.clear();
+		stopRequestGenerations_.clear();
+		stopCompletionGenerations_.clear();
+		nextStopGeneration_ = 0;
+		for (auto& epoch : advertisingIntentEpochs_) epoch.store(0);
+		{
+			std::lock_guard<std::mutex> lock(deferredCallbacksMutex_);
+			deferredCallbacks_ = {};
+			deferredCallbacksEvent_ = {};
+			deferredCallbacksEventInitialized_ = false;
+			deferredCallbacksEventQueued_ = false;
+		}
+		nimbleEvents.clear();
+		hostActive.fill(false);
+		wrapperActive.fill(false);
+		legacyActive = false;
+		stopSucceeds = true;
+		stopCalls = 0;
+		appliedIds.clear();
+		startedIds.clear();
+		startCalls = 0;
+		applyCalls = 0;
+		failApplyId = -1;
+		startReturns = true;
+		startActivates = true;
+		startInstanceReturns = true;
+		failTimerCreate = false;
+		failTimerStart = false;
+		FixtureGatt::ready = true;
+		DynamicGatt::state = DynamicGatt::State::Ready;
+		Serial.input.clear();
+	}
+}
+
+namespace Advertising
+{
+	bool ApplyConfig(const InstanceConfig& config)
+	{
+		++applyCalls;
+		appliedIds.push_back(config.id);
+		return failApplyId != static_cast<int>(config.id);
+	}
+	bool Start(uint8_t instanceId)
+	{
+		++startCalls;
+		startedIds.push_back(instanceId);
+		if (startReturns && startActivates) hostActive[instanceId] = true;
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+		if (instanceId == 0 && startReturns && startActivates) legacyActive = true;
+#endif
+		return startReturns;
+	}
+	bool Stop(uint8_t instanceId)
+	{
+		@@STOP_BODY@@
+	}
+	StopAllResult StopAll()
+	{
+		@@STOP_ALL_BODY@@
+	}
+	bool CaptureForRebuild(RebuildSnapshot& out)
+	{
+		@@CAPTURE_BODY@@
+	}
+	bool RestoreAfterRebuild(const RebuildSnapshot& snapshot)
+	{
+		@@RESTORE_BODY@@
+	}
+	void OnConnectionEstablished()
+	{
+		@@CONNECTION_BODY@@
+	}
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	void OnAdvertisingStopped(uint8_t instanceId, int reason)
+	{
+		@@STOPPED_CALLBACK_BODY@@
+	}
+#endif
+	void DrainDeferredCallbacks()
+	{
+		@@DRAIN_BODY@@
+	}
+	void CancelAllRestartAfterConnection() {}
+	bool SetInterval(uint8_t instanceId, uint32_t intervalMs)
+	{
+		assert(DynamicGatt::IsEntryHeld());
+		(void)instanceId;
+		(void)intervalMs;
+		++intervalCalls;
+		return true;
+	}
+	bool AddDefaultInstance(uint8_t instanceId, std::string_view name)
+	{
+		assert(DynamicGatt::IsEntryHeld());
+		(void)instanceId;
+		(void)name;
+		++addInstanceCalls;
+		return true;
+	}
+}
+
+namespace ConsoleCommand
+{
+	enum class Group { Advertising, Security, Connection, Other };
+	struct Descriptor
+	{
+		Group group = Group::Other;
+		std::string_view description = "test command";
+		void (*handler)(char) = nullptr;
+	};
+	static Descriptor descriptor;
+	static char expectedKey = 0;
+	inline const Descriptor* Find(char key) { return key == expectedKey ? &descriptor : nullptr; }
+}
+namespace
+{
+ bool requiresDynamicGattEntry(const ConsoleCommand::Descriptor& command, char key);
+ void printCommandEcho(const ConsoleCommand::Descriptor& command, char key);
+ std::optional<char> readCommandChar();
+}
+namespace ProcessMenu
+{
+	static std::atomic<ConsoleMode> consoleMode{ ConsoleMode::Config };
+	static int handlerCalls = 0;
+	static bool handlerSawEntry = false;
+	static int selectedBondCalls = 0;
+	static size_t selectedBondIndex = 0;
+	inline uint8_t SelectedAdvInstance() { return 0; }
+	inline bool SelectBondTarget(size_t index)
+	{
+		assert(DynamicGatt::IsEntryHeld());
+		++selectedBondCalls;
+		selectedBondIndex = index;
+		return true;
+	}
+	void handleConfigInput()
+	{
+		@@CONFIG_INPUT_BODY@@
+	}
+}
+namespace
+{
+	bool requiresDynamicGattEntry(const ConsoleCommand::Descriptor& command, char key)
+	{
+		@@REQUIRES_ENTRY_BODY@@
+	}
+	void printCommandEcho(const ConsoleCommand::Descriptor& command, char key)
+	{
+		@@PRINT_ECHO_BODY@@
+	}
+	std::optional<char> readCommandChar()
+	{
+		@@READ_COMMAND_BODY@@
+	}
+	void testCommandHandler(char)
+	{
+		++ProcessMenu::handlerCalls;
+		ProcessMenu::handlerSawEntry = DynamicGatt::IsEntryHeld();
+	}
+}
+namespace ProcessInput
+{
+	static bool parseUnsignedDecimal(const char* first, const char* last, uint32_t maximum, uint32_t& value)
+	{
+		@@PARSE_UNSIGNED_BODY@@
+	}
+	static void submitInterval(const char* s, size_t start, size_t end, size_t trimmedLen)
+	{
+		const ConsoleMode curMode = ConsoleMode::SetAdvInterval;
+		@@SET_INTERVAL_BLOCK@@
+	}
+	static void submitAddInstance(const char* s, size_t start, size_t end, size_t trimmedLen)
+	{
+		const ConsoleMode curMode = ConsoleMode::AddAdvInstance;
+		@@ADD_INSTANCE_BLOCK@@
+	}
+	static void submitBondTarget(const char* s, size_t start, size_t end, size_t trimmedLen)
+	{
+		const ConsoleMode curMode = ConsoleMode::SelectBondTarget;
+		@@BOND_TARGET_BLOCK@@
+	}
+}
+
+static Advertising::InstanceConfig config(uint8_t id)
+{
+	Advertising::InstanceConfig result;
+	result.id = id;
+	result.restartAfterConnection = true;
+	result.discoverable = DiscoverableMode::General;
+	result.mode = AdvertisementMode::Ordinary;
+	return result;
+}
+static void testHostTruthCaptureAndStop()
+{
+	resetAdvertisingState();
+	configs_[0] = config(0);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	hostActive[0] = true;
+	wrapperActive[0] = false;
+#else
+	legacyActive = true;
+#endif
+	Advertising::RebuildSnapshot snapshot;
+	assert(Advertising::CaptureForRebuild(snapshot));
+	assert(snapshot.configs.size() == 1);
+	assert(snapshot.active.size() == 1 && snapshot.active[0] == 0);
+	auto stopped = Advertising::StopAll();
+	assert(stopped.stopped == 1 && stopped.failed == 0);
+	assert(stopCalls == 1);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	assert(!hostActive[0]);
+#else
+	assert(!legacyActive);
+#endif
+}
+static void testRestoreSuccessAndOrder()
+{
+	resetAdvertisingState();
+	configs_[0] = config(0);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	configs_[1] = config(1);
+	hostActive[0] = true;
+	wrapperActive[0] = false;
+	pendingRestartInstances_.insert(1);
+	Advertising::RebuildSnapshot snapshot;
+	assert(Advertising::CaptureForRebuild(snapshot));
+	assert(snapshot.active.size() == 1 && snapshot.active[0] == 0);
+	assert(snapshot.pending.size() == 1 && snapshot.pending[0] == 1);
+	hostActive.fill(false);
+	wrapperActive.fill(false);
+	pendingRestartInstances_.clear();
+	restartGenerations_.clear();
+	assert(Advertising::RestoreAfterRebuild(snapshot));
+	assert(appliedIds.size() == 2 && appliedIds[0] == 0 && appliedIds[1] == 1);
+	assert(startedIds.size() == 1 && startedIds[0] == 0);
+	assert(hostActive[0]);
+	assert(pendingRestartInstances_.count(1) == 1);
+	assert(restartTimers_.count(1) == 1 && restartTimers_[1]->started);
+#else
+	legacyActive = true;
+	Advertising::RebuildSnapshot snapshot;
+	assert(Advertising::CaptureForRebuild(snapshot));
+	assert(snapshot.active.size() == 1 && snapshot.active[0] == 0);
+	legacyActive = false;
+	assert(Advertising::RestoreAfterRebuild(snapshot));
+	assert(appliedIds.size() == 1 && appliedIds[0] == 0);
+	assert(startedIds.size() == 1 && startedIds[0] == 0);
+	assert(legacyActive);
+#endif
+}
+static void testRestoreFailures()
+{
+	resetAdvertisingState();
+	configs_[0] = config(0);
+	Advertising::RebuildSnapshot activeSnapshot;
+	activeSnapshot.configs = { config(0) };
+	activeSnapshot.active = { 0 };
+	failApplyId = 0;
+	assert(!Advertising::RestoreAfterRebuild(activeSnapshot));
+	assert(startedIds.empty());
+	assert(pendingRestartInstances_.count(0) == 0);
+
+	resetAdvertisingState();
+	configs_[0] = config(0);
+	activeSnapshot.configs = { config(0) };
+	activeSnapshot.active = { 0 };
+	startActivates = false;
+	assert(!Advertising::RestoreAfterRebuild(activeSnapshot));
+	assert(startedIds.size() == 1 && !hostActive[0]);
+
+	for (bool failStart : { false, true })
+	{
+		resetAdvertisingState();
+		configs_[0] = config(0);
+		Advertising::RebuildSnapshot pendingSnapshot;
+		pendingSnapshot.configs = { config(0) };
+		pendingSnapshot.pending = { 0 };
+		if (failStart) failTimerStart = true;
+		else failTimerCreate = true;
+		assert(!Advertising::RestoreAfterRebuild(pendingSnapshot));
+		assert(pendingRestartInstances_.count(0) == 1);
+		assert(restartTimers_.count(0) == 0);
+		assert(liveTimers == 0);
+	}
+}
+static void testDeferredApplyingPersistence()
+{
+	resetAdvertisingState();
+	configs_[0] = config(0);
+	DynamicGatt::state = DynamicGatt::State::Applying;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	Advertising::OnAdvertisingStopped(0, 0);
+	assert(deferredCallbacks_.advertisingStopped[0].pending);
+#else
+	Advertising::OnConnectionEstablished();
+	assert(deferredCallbacks_.connectionEstablished);
+#endif
+	assert(nimbleEvents.empty());
+
+	DynamicGatt::state = DynamicGatt::State::Ready;
+	Advertising::DrainDeferredCallbacks();
+	assert(nimbleEvents.size() == 1);
+	DynamicGatt::state = DynamicGatt::State::Applying;
+	runOneNimbleEvent();
+	assert(nimbleEvents.empty());
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	assert(deferredCallbacks_.advertisingStopped[0].pending);
+#else
+	assert(deferredCallbacks_.connectionEstablished);
+#endif
+
+	DynamicGatt::state = DynamicGatt::State::Ready;
+	Advertising::DrainDeferredCallbacks();
+	assert(nimbleEvents.size() == 1);
+	runOneNimbleEvent();
+	assert(pendingRestartInstances_.count(0) == 1);
+	assert(restartTimers_.count(0) == 1 && restartTimers_[0]->started);
+}
+static void testReadyLeaseCollisionRequeues()
+{
+	resetAdvertisingState();
+	configs_[0] = config(0);
+	{
+		DynamicGatt::Entry serialMutation;
+		assert(serialMutation);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		Advertising::OnAdvertisingStopped(0, 0);
+#else
+		Advertising::OnConnectionEstablished();
+#endif
+		assert(nimbleEvents.size() == 1);
+		runOneNimbleEvent();
+		assert(nimbleEvents.size() == 1);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		assert(deferredCallbacks_.advertisingStopped[0].pending);
+#else
+		assert(deferredCallbacks_.connectionEstablished);
+#endif
+	}
+	assert(nimbleEvents.size() == 1);
+	runOneNimbleEvent();
+	assert(pendingRestartInstances_.count(0) == 1);
+	assert(restartTimers_.count(0) == 1 && restartTimers_[0]->started);
+}
+static void testStaleDeferredIntentAndTimerGeneration()
+{
+	resetAdvertisingState();
+	configs_[0] = config(0);
+	{
+		DynamicGatt::Entry serialMutation;
+		assert(serialMutation);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+		Advertising::OnAdvertisingStopped(0, 0);
+		assert(nimbleEvents.size() == 1);
+#else
+		Advertising::OnConnectionEstablished();
+		assert(nimbleEvents.size() == 1);
+#endif
+		{
+			std::lock_guard<std::mutex> lock(configMutex_);
+			cancelRestartLocked(0, "manual stop invalidates deferred callback");
+		}
+	}
+	runOneNimbleEvent();
+	assert(pendingRestartInstances_.count(0) == 0);
+	assert(restartTimers_.count(0) == 0);
+
+	resetAdvertisingState();
+	configs_[0] = config(0);
+	pendingRestartInstances_.insert(0);
+	restartGenerations_[0] = 8;
+	DynamicGatt::state = DynamicGatt::State::Applying;
+	@@TRY_RESTART_STALE_TEST@@
+	DynamicGatt::state = DynamicGatt::State::Ready;
+	Advertising::DrainDeferredCallbacks();
+	runOneNimbleEvent();
+	assert(startCalls == 0);
+	assert(pendingRestartInstances_.count(0) == 1);
+
+	resetAdvertisingState();
+	configs_[0] = config(0);
+	pendingRestartInstances_.insert(0);
+	restartGenerations_[0] = 8;
+	DynamicGatt::state = DynamicGatt::State::Applying;
+	@@TRY_RESTART_CURRENT_TEST@@
+	DynamicGatt::state = DynamicGatt::State::Ready;
+	Advertising::DrainDeferredCallbacks();
+	runOneNimbleEvent();
+	assert(startCalls == 1 && hostActive[0]);
+	assert(pendingRestartInstances_.count(0) == 0);
+}
+static void testSerialMenuAdmission()
+{
+	using ConsoleCommand::Group;
+	ProcessMenu::handlerCalls = 0;
+	ProcessMenu::handlerSawEntry = false;
+	auto invoke = [](char key, Group group, DynamicGatt::State state)
+	{
+		ConsoleCommand::descriptor.group = group;
+		ConsoleCommand::descriptor.description = "test";
+		ConsoleCommand::descriptor.handler = testCommandHandler;
+		ConsoleCommand::expectedKey = key;
+		DynamicGatt::state = state;
+		Serial.input.clear();
+		Serial.feed(static_cast<char>(std::tolower(static_cast<unsigned char>(key))));
+		ProcessMenu::consoleMode = ConsoleMode::Config;
+		ProcessMenu::handleConfigInput();
+	};
+	invoke('A', Group::Advertising, DynamicGatt::State::Applying);
+	assert(ProcessMenu::handlerCalls == 0);
+	invoke('Q', Group::Advertising, DynamicGatt::State::Applying);
+	assert(ProcessMenu::handlerCalls == 1 && !ProcessMenu::handlerSawEntry);
+	invoke('W', Group::Advertising, DynamicGatt::State::Applying);
+	assert(ProcessMenu::handlerCalls == 2 && !ProcessMenu::handlerSawEntry);
+	invoke('D', Group::Security, DynamicGatt::State::Applying);
+	assert(ProcessMenu::handlerCalls == 2);
+	invoke('S', Group::Security, DynamicGatt::State::Applying);
+	assert(ProcessMenu::handlerCalls == 2);
+	invoke('A', Group::Advertising, DynamicGatt::State::Ready);
+	assert(ProcessMenu::handlerCalls == 3 && ProcessMenu::handlerSawEntry);
+	invoke('D', Group::Security, DynamicGatt::State::Ready);
+	assert(ProcessMenu::handlerCalls == 4 && ProcessMenu::handlerSawEntry);
+	invoke('S', Group::Security, DynamicGatt::State::Ready);
+	assert(ProcessMenu::handlerCalls == 5 && ProcessMenu::handlerSawEntry);
+}
+static void testBufferedSubmissionAdmission()
+{
+	const char interval[] = "250";
+	ProcessMenu::consoleMode = ConsoleMode::SetAdvInterval;
+	DynamicGatt::state = DynamicGatt::State::Applying;
+	intervalCalls = 0;
+	ProcessInput::submitInterval(interval, 0, 3, 3);
+	assert(ProcessMenu::consoleMode == ConsoleMode::Config && intervalCalls == 0);
+
+	ProcessMenu::consoleMode = ConsoleMode::SetAdvInterval;
+	DynamicGatt::state = DynamicGatt::State::Ready;
+	ProcessInput::submitInterval(interval, 0, 3, 3);
+	assert(intervalCalls == 1 && ProcessMenu::consoleMode == ConsoleMode::Config);
+
+	const char bond[] = "0";
+	ProcessMenu::consoleMode = ConsoleMode::SelectBondTarget;
+	DynamicGatt::state = DynamicGatt::State::Applying;
+	ProcessMenu::selectedBondCalls = 0;
+	ProcessInput::submitBondTarget(bond, 0, 1, 1);
+	assert(ProcessMenu::consoleMode == ConsoleMode::Config && ProcessMenu::selectedBondCalls == 0);
+	ProcessMenu::consoleMode = ConsoleMode::SelectBondTarget;
+	DynamicGatt::state = DynamicGatt::State::Ready;
+	ProcessInput::submitBondTarget(bond, 0, 1, 1);
+	assert(ProcessMenu::selectedBondCalls == 1 && ProcessMenu::selectedBondIndex == 0);
+
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	const char add[] = "1 demo";
+	ProcessMenu::consoleMode = ConsoleMode::AddAdvInstance;
+	DynamicGatt::state = DynamicGatt::State::Applying;
+	addInstanceCalls = 0;
+	ProcessInput::submitAddInstance(add, 0, 6, 6);
+	assert(ProcessMenu::consoleMode == ConsoleMode::Config && addInstanceCalls == 0);
+	ProcessMenu::consoleMode = ConsoleMode::AddAdvInstance;
+	DynamicGatt::state = DynamicGatt::State::Ready;
+	ProcessInput::submitAddInstance(add, 0, 6, 6);
+	assert(ProcessMenu::consoleMode == ConsoleMode::Config && addInstanceCalls == 1);
+#endif
+}
+int main()
+{
+	testHostTruthCaptureAndStop();
+	testRestoreSuccessAndOrder();
+	testRestoreFailures();
+	testDeferredApplyingPersistence();
+	testReadyLeaseCollisionRequeues();
+	testStaleDeferredIntentAndTimerGeneration();
+	testSerialMenuAdmission();
+	testBufferedSubmissionAdmission();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+	std::puts("PASS ext advertising capture/stop, ordered restore/failures, deferred callback persistence and generation fences, serial admission");
+#else
+	std::puts("PASS legacy advertising capture/stop, ordered restore/failures, deferred callback persistence and generation fences, serial admission");
+#endif
+}

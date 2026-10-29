@@ -8,6 +8,7 @@
 #include "netManager.h"
 #include "pairingCoordinator.h"
 #include "fixtureGatt.h"
+#include "dynamicGatt.h"
 #include "firmwareIdentity.h"
 #include <Arduino.h>
 #include <ArduinoOTA.h>
@@ -75,7 +76,10 @@ enum class WorkerOperation
 	RequestPhy,
 	ReadPeerLink,
 	SetPreferredMtu,
-	PublishValue
+	PublishValue,
+	AddService,
+	RemoveService,
+	SendServiceChanged
 };
 enum class SlotState { Empty, Queued, Running, Done };
 enum class Result { Applied, Accepted, Dispatched, Failed };
@@ -94,6 +98,8 @@ struct WorkerCommand
 	char name[32]{};
 	char address[18]{};
 	char target[26]{};
+	char serviceUuid[37]{};
+	char characteristicUuid[37]{};
 	GattValue::Buffer value{};
 	size_t valueLength = 0;
 };
@@ -141,7 +147,7 @@ struct ExecutionResult
 	Result result = Result::Failed;
 	OperationData data{};
 	std::string detail = "Operation failed.";
-	const char* errorCode = nullptr;
+	std::string errorCode;
 	std::optional<uint8_t> errorInstanceId;
 };
 
@@ -437,6 +443,9 @@ std::string_view operationName(const WorkerCommand& command)
 		case WorkerOperation::ReadPeerLink: return "readPeerLink";
 		case WorkerOperation::SetPreferredMtu: return "setPreferred";
 		case WorkerOperation::PublishValue: return "publishValue";
+		case WorkerOperation::AddService: return "addService";
+		case WorkerOperation::RemoveService: return "removeService";
+		case WorkerOperation::SendServiceChanged: return "sendServiceChanged";
 	}
 	return "unknown";
 }
@@ -588,6 +597,61 @@ Admission prepareWorkerCommand(Route route, const cJSON* json, WorkerCommand& co
 
 	if (route == Route::Gatt)
 	{
+		if (op == "addService")
+		{
+			std::string_view serviceUuid, characteristicUuid, valueHex;
+			if (!hasExactKeys(json, {"op", "serviceUuid", "characteristicUuid", "valueHex"}))
+				return invalid(detail, "Unexpected or duplicate request field.");
+			if (!getString(json, "serviceUuid", serviceUuid, 36) ||
+				!getString(json, "characteristicUuid", characteristicUuid, 36))
+				return invalid(detail, "Service and characteristic UUIDs must use canonical 128-bit UUID form.");
+			std::string normalizedService, normalizedCharacteristic;
+			if (!DynamicGatt::CanonicalUuid(serviceUuid, normalizedService) ||
+				!DynamicGatt::CanonicalUuid(characteristicUuid, normalizedCharacteristic))
+				return invalid(detail, "Service and characteristic UUIDs must use canonical 128-bit UUID form.");
+			if (!getString(json, "valueHex", valueHex, kMaxRequestBody, true) ||
+				!GattValue::ParseHex(valueHex, command.value, command.valueLength))
+				return invalid(detail, "Expected complete hex byte pairs, at most 256 decoded bytes; empty is allowed.");
+			if (!DynamicGatt::Ready())
+			{
+				detail = "GATT is not ready for a structural operation; retry after it becomes Ready.";
+				return Admission::Busy;
+			}
+			std::memcpy(command.serviceUuid, normalizedService.c_str(), normalizedService.size() + 1);
+			std::memcpy(command.characteristicUuid, normalizedCharacteristic.c_str(), normalizedCharacteristic.size() + 1);
+			command.operation = WorkerOperation::AddService;
+			setTarget(command, "services");
+			return Admission::Ready;
+		}
+		if (op == "removeService")
+		{
+			std::string_view serviceId;
+			if (!hasExactKeys(json, {"op", "serviceId"}) ||
+				!getString(json, "serviceId", serviceId, 25) || !WebValidation::parseId(serviceId, command.connection))
+				return invalid(detail, "A valid opaque serviceId and exact request fields are required.");
+			if (command.connection.boot == 0 && command.connection.sequence == 0)
+				return invalid(detail, "Protected fixture services cannot be removed.");
+			if (!DynamicGatt::Ready())
+			{
+				detail = "GATT is not ready for a structural operation; retry after it becomes Ready.";
+				return Admission::Busy;
+			}
+			command.operation = WorkerOperation::RemoveService;
+			setTarget(command, serviceId);
+			return Admission::Ready;
+		}
+		if (op == "sendServiceChanged")
+		{
+			if (!hasExactKeys(json, {"op"})) return invalid(detail, "Unexpected or duplicate request field.");
+			if (!DynamicGatt::Ready())
+			{
+				detail = "GATT is not ready for Service Changed dispatch; retry after it becomes Ready.";
+				return Admission::Busy;
+			}
+			command.operation = WorkerOperation::SendServiceChanged;
+			setTarget(command, "services");
+			return Admission::Ready;
+		}
 		if (op != "publishValue") return unsupported(detail, "Unknown GATT operation.");
 		std::string_view target, hex;
 		if (!hasExactKeys(json, {"op", "targetId", "hex"}) ||
@@ -1057,6 +1121,27 @@ ExecutionResult execute(const WorkerCommand& command)
 	auto& manager = BluetoothManager::Instance();
 	switch (command.operation)
 	{
+		case WorkerOperation::AddService:
+		case WorkerOperation::RemoveService:
+		case WorkerOperation::SendServiceChanged:
+		{
+			DynamicGatt::Result result;
+			if (command.operation == WorkerOperation::AddService)
+				result = DynamicGatt::AddService(command.serviceUuid, command.characteristicUuid, command.value, command.valueLength);
+			else if (command.operation == WorkerOperation::RemoveService)
+				result = DynamicGatt::RemoveService(command.connection);
+			else
+				result = DynamicGatt::SendServiceChanged();
+			switch (result.outcome)
+			{
+				case DynamicGatt::Outcome::Applied: execution.result = Result::Applied; break;
+				case DynamicGatt::Outcome::Dispatched: execution.result = Result::Dispatched; break;
+				default: execution.result = Result::Failed; break;
+			}
+			execution.detail = result.detail.empty() ? defaultDetail(execution.result) : result.detail;
+			execution.errorCode = std::move(result.errorCode);
+			break;
+		}
 		case WorkerOperation::PublishValue:
 		{
 			const auto result = FixtureGatt::ChangeValue(command.connection, command.value, command.valueLength);
@@ -1253,8 +1338,8 @@ void operationWorkerTask(void*)
 			operationRecord.result = result.result;
 			operationRecord.data = result.data;
 			std::strncpy(operationRecord.detail, result.detail.c_str(), sizeof(operationRecord.detail) - 1);
-			if (result.errorCode)
-				std::strncpy(operationRecord.errorCode, result.errorCode, sizeof(operationRecord.errorCode) - 1);
+			if (!result.errorCode.empty())
+				std::strncpy(operationRecord.errorCode, result.errorCode.c_str(), sizeof(operationRecord.errorCode) - 1);
 			if (result.errorInstanceId)
 			{
 				operationRecord.errorHasInstanceId = true;
@@ -1754,48 +1839,123 @@ esp_err_t getGatt(httpd_req_t* request)
 {
 	if (!guardRequest(request, false)) return ESP_OK;
 	const auto observed = FixtureGatt::GetValues();
-	if (observed.outcome != FixtureGatt::Outcome::Ready)
+	const auto inventory = DynamicGatt::GetInventory();
+	const bool valuesAvailable = observed.outcome == FixtureGatt::Outcome::Ready;
+	const bool servicesAvailable = inventory.available && inventory.state == DynamicGatt::State::Ready && DynamicGatt::Ready();
+	const int responseStatus = observed.outcome == FixtureGatt::Outcome::Failed ? 500 : 200;
+	const char* state = "Ready";
+	switch (inventory.state)
 	{
-		if (observed.outcome == FixtureGatt::Outcome::Failed)
-			sendFailure(request, 500, "Failed", observed.detail.c_str());
-		else
-			sendFailure(request, 409, "Busy", observed.detail.c_str());
-		return ESP_OK;
+		case DynamicGatt::State::Applying: state = "Applying"; break;
+		case DynamicGatt::State::RecoveryRequired: state = "RecoveryRequired"; break;
+		case DynamicGatt::State::Ready: default: state = "Ready"; break;
 	}
+	std::string reason;
+	auto addReason = [&reason](const std::string& value, const char* fallback)
+	{
+		const std::string text = value.empty() ? fallback : value;
+		if (!reason.empty()) reason += "; ";
+		reason += text;
+	};
+	if (!valuesAvailable) addReason(observed.detail, "GATT values are not currently available.");
+	if (!servicesAvailable) addReason(inventory.reason, inventory.state == DynamicGatt::State::Ready ?
+		"GATT service inventory is not currently available." : "GATT service inventory is unavailable while the database is not Ready.");
+
 	cJSON* json = cJSON_CreateObject();
 	if (!json) { sendJson(request, 500, nullptr); return ESP_OK; }
-	cJSON* values = cJSON_AddArrayToObject(json, "values");
-	if (!values) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
-	for (const auto& entry : observed.values)
+	if (valuesAvailable)
 	{
-		cJSON* value = cJSON_CreateObject();
-		if (!value) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
-		if (!cJSON_AddStringToObject(value, "targetId", WebValidation::formatId(entry.id).c_str()) ||
-			!cJSON_AddStringToObject(value, "name", entry.name) ||
-			!cJSON_AddStringToObject(value, "serviceUuid", entry.serviceUuid) ||
-			!cJSON_AddStringToObject(value, "characteristicUuid", entry.characteristicUuid) ||
-			!cJSON_AddBoolToObject(value, "notify", (entry.properties & NIMBLE_PROPERTY::NOTIFY) != 0) ||
-			!cJSON_AddBoolToObject(value, "indicate", (entry.properties & NIMBLE_PROPERTY::INDICATE) != 0) ||
-			!cJSON_AddNumberToObject(value, "maxLength", entry.maxLength) ||
-			!cJSON_AddNumberToObject(value, "publicationLimit", entry.publicationLimit) ||
-			!cJSON_AddNumberToObject(value, "minimumPeerMtu", entry.minimumPeerMtu) ||
-			!cJSON_AddNumberToObject(value, "connectedPeerCount", entry.connectedPeerCount) ||
-			!cJSON_AddStringToObject(value, "currentHex", hexValue(entry.current).c_str()))
+		cJSON* values = cJSON_AddArrayToObject(json, "values");
+		if (!values) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
+		for (const auto& entry : observed.values)
 		{
-			cJSON_Delete(value);
-			cJSON_Delete(json);
-			sendJson(request, 500, nullptr);
-			return ESP_OK;
-		}
-		if (!cJSON_AddItemToArray(values, value))
-		{
-			cJSON_Delete(value);
-			cJSON_Delete(json);
-			sendJson(request, 500, nullptr);
-			return ESP_OK;
+			cJSON* value = cJSON_CreateObject();
+			if (!value) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
+			if (!cJSON_AddStringToObject(value, "targetId", WebValidation::formatId(entry.id).c_str()) ||
+				!cJSON_AddStringToObject(value, "name", entry.name) ||
+				!cJSON_AddStringToObject(value, "serviceUuid", entry.serviceUuid) ||
+				!cJSON_AddStringToObject(value, "characteristicUuid", entry.characteristicUuid) ||
+				!cJSON_AddBoolToObject(value, "notify", (entry.properties & NIMBLE_PROPERTY::NOTIFY) != 0) ||
+				!cJSON_AddBoolToObject(value, "indicate", (entry.properties & NIMBLE_PROPERTY::INDICATE) != 0) ||
+				!cJSON_AddNumberToObject(value, "maxLength", entry.maxLength) ||
+				!cJSON_AddNumberToObject(value, "publicationLimit", entry.publicationLimit) ||
+				!cJSON_AddNumberToObject(value, "minimumPeerMtu", entry.minimumPeerMtu) ||
+				!cJSON_AddNumberToObject(value, "connectedPeerCount", entry.connectedPeerCount) ||
+				!cJSON_AddStringToObject(value, "currentHex", hexValue(entry.current).c_str()))
+			{
+				cJSON_Delete(value);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
+			if (!cJSON_AddItemToArray(values, value))
+			{
+				cJSON_Delete(value);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
 		}
 	}
-	sendJson(request, 200, json);
+	else if (!cJSON_AddNullToObject(json, "values"))
+	{
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+
+	if (!cJSON_AddStringToObject(json, "state", state) ||
+		!cJSON_AddNumberToObject(json, "serviceLimit", DynamicGatt::ServiceLimit) ||
+		!cJSON_AddBoolToObject(json, "valuesAvailable", valuesAvailable) ||
+		!cJSON_AddBoolToObject(json, "servicesAvailable", servicesAvailable))
+	{
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+	if (reason.size() && !cJSON_AddStringToObject(json, "reason", reason.c_str()))
+	{
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+
+	if (servicesAvailable)
+	{
+		cJSON* services = cJSON_AddArrayToObject(json, "services");
+		if (!services) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
+		for (const auto& entry : inventory.services)
+		{
+			cJSON* service = cJSON_CreateObject();
+			if (!service) { cJSON_Delete(json); sendJson(request, 500, nullptr); return ESP_OK; }
+			const auto id = WebValidation::formatId(entry.id);
+			if (!cJSON_AddStringToObject(service, "serviceId", id.c_str()) ||
+				!cJSON_AddStringToObject(service, "serviceUuid", entry.serviceUuid.c_str()) ||
+				!cJSON_AddStringToObject(service, "characteristicUuid", entry.characteristicUuid.c_str()) ||
+				!cJSON_AddBoolToObject(service, "protectedService", entry.protectedService))
+			{
+				cJSON_Delete(service);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
+			if (!cJSON_AddItemToArray(services, service))
+			{
+				cJSON_Delete(service);
+				cJSON_Delete(json);
+				sendJson(request, 500, nullptr);
+				return ESP_OK;
+			}
+		}
+	}
+	else if (!cJSON_AddNullToObject(json, "services"))
+	{
+		cJSON_Delete(json);
+		sendJson(request, 500, nullptr);
+		return ESP_OK;
+	}
+
+	sendJson(request, responseStatus, json);
 	return ESP_OK;
 }
 

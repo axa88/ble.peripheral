@@ -1,0 +1,102 @@
+#include <algorithm>
+#include <cstdint>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#define CONFIG_BT_NIMBLE_EXT_ADV 1
+#define CONFIG_BT_NIMBLE_ROLE_BROADCASTER 1
+#define CONFIG_NIMBLE_CPP_LOG_LEVEL 0
+#define NIMBLE_LOGD(...) ((void)0)
+#define NIMBLE_LOGE(...) ((void)0)
+#define NIMBLE_LOGW(...) ((void)0)
+#define LOG_TAG 0
+
+struct NimBLEUUID {
+    explicit NimBLEUUID(std::string s) : value(std::move(s)) {}
+    std::string value;
+    friend bool operator==(const NimBLEUUID& a, const NimBLEUUID& b) { return a.value == b.value; }
+};
+class NimBLEService {
+public:
+    explicit NimBLEService(std::string uuid, int removed=0) : uuid_(std::move(uuid)), removed_(removed) {}
+    int getRemoved() const { return removed_; }
+    void setRemoved(int value) { removed_ = value; }
+    NimBLEUUID getUUID() const { return NimBLEUUID(uuid_); }
+private:
+    std::string uuid_;
+    int removed_;
+};
+struct gattRegisterCallbackArgs {};
+struct BleHostConfig { void (*gatts_register_cb)(); void* gatts_register_arg; };
+static BleHostConfig ble_hs_cfg{};
+static int gattsStartCalls = 0;
+static int ble_gatts_start() { ++gattsStartCalls; return 0; }
+struct NimBLEUtils { static const char* returnCodeToString(int) { return "stub"; } };
+
+class NimBLEServer {
+public:
+    bool m_gattsStarted = false;
+    bool m_svcChanged = false;
+    std::vector<NimBLEService*> m_svcVec;
+    std::vector<NimBLEService*> nativeServices;
+    int resetCalls = 0;
+    int serviceChangedIndications = 0;
+    NimBLEService* getServiceByUUID(const NimBLEUUID& uuid) const {
+        for (auto* service : m_svcVec) if (service && service->getUUID() == uuid) return service;
+        return nullptr;
+    }
+    void setServiceChanged() { if (m_gattsStarted) m_svcChanged = true; }
+    uint8_t getConnectedCount() const { return 0; }
+    bool resetGATT() {
+        ++resetCalls;
+        nativeServices.clear();
+        for (auto* service : m_svcVec) if (service && !service->getRemoved()) nativeServices.push_back(service);
+        return true;
+    }
+    void sendServiceChangedIndication() { ++serviceChangedIndications; }
+    static void gattRegisterCallback() {}
+    void addService(NimBLEService* service);
+    bool start();
+};
+
+@@ADD_SERVICE@@
+@@SERVER_START@@
+
+static int checks=0, failures=0;
+static void check(bool ok, const char* label) {
+    ++checks; std::cout << (ok ? "PASS " : "FAIL ") << label << "\n"; if (!ok) ++failures;
+}
+static bool contains(const std::vector<NimBLEService*>& services, const NimBLEService* target) {
+    return std::find(services.begin(), services.end(), target) != services.end();
+}
+static void testNonRemovedAddIsSilentNoOp() {
+    gattsStartCalls = 0;
+    NimBLEServer server;
+    server.m_gattsStarted = true;
+    NimBLEService service("aaaaaaaa-1111-2222-3333-444444444440");
+    server.addService(&service);
+    check(server.m_svcVec.size()==1 && server.m_svcVec[0]==&service && !server.m_svcChanged,
+          "pinned addService appends nonremoved service without marking change");
+    check(server.start(), "pinned start returns success for already-started server");
+    check(server.resetCalls==0 && gattsStartCalls==0 && !contains(server.nativeServices,&service),
+          "start success is a false success and native database lacks appended service");
+}
+static void testRemovedAddTriggersRegistration() {
+    gattsStartCalls = 0;
+    NimBLEServer server;
+    server.m_gattsStarted = true;
+    NimBLEService service("bbbbbbbb-1111-2222-3333-444444444440",1);
+    server.m_svcVec.push_back(&service);
+    server.addService(&service);
+    check(!service.getRemoved() && server.m_svcChanged,
+          "pinned addService re-enables removed service and marks changed");
+    check(server.start() && server.resetCalls==1 && gattsStartCalls==1 && contains(server.nativeServices,&service),
+          "changed-service path resets and registers the service");
+}
+int main() {
+    testNonRemovedAddIsSilentNoOp();
+    testRemovedAddTriggersRegistration();
+    std::cout << checks-failures << "/" << checks << " checks passed\n";
+    return failures ? 1 : 0;
+}

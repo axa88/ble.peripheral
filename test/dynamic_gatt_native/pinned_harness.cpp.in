@@ -1,0 +1,280 @@
+#include "src/gattRebuild.h"
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <new>
+#include <string>
+#include <vector>
+
+#define MYNEWT_VAL(x) MYNEWT_VAL_##x
+#define MYNEWT_VAL_BLE_DYNAMIC_SERVICE 0
+#define MYNEWT_VAL_BLE_SVC_HID_SERVICE 0
+#define MYNEWT_VAL_BLE_MAX_CONNECTIONS 3
+#define BLE_HS_EBUSY 16
+#define BLE_HS_ENOENT 2
+#define BLE_HS_EINVAL 3
+#define NIMBLE_ATT_REMOVE_HIDE 1
+#define NIMBLE_ATT_REMOVE_DELETE 2
+#define CONFIG_BT_NIMBLE_EXT_ADV 1
+#define CONFIG_BT_NIMBLE_ROLE_BROADCASTER 1
+
+struct ble_gatt_svc_def { int svcs; int attrs; int cccds; };
+struct ble_gatt_resources { int svcs; int attrs; int cccds; };
+struct ble_gatts_svc_entry { uint16_t handle; uint16_t end_group_handle; bool visible; };
+struct ble_att_svr_entry { ble_att_svr_entry* ha_next; };
+struct ble_att_svr_entry_list { ble_att_svr_entry* first; };
+#define STAILQ_FIRST(h) ((h)->first)
+#define STAILQ_REMOVE_HEAD(h, f) do { (h)->first = (h)->first->f; } while (0)
+
+static int ble_hs_max_services, ble_hs_max_attrs, ble_hs_max_client_configs;
+static int ble_gatts_num_cfgable_chrs, ble_gatts_num_svc_defs;
+static uint16_t ble_gatts_num_svc_entries, ble_att_svr_id;
+static ble_gatts_svc_entry* ble_gatts_svc_entries;
+static const ble_gatt_svc_def** ble_gatts_svc_defs;
+static ble_att_svr_entry_list ble_att_svr_list{nullptr}, ble_att_svr_hidden_list{nullptr};
+static bool nativeMutable = true, attPoolLive = true, invalidAttFree = false;
+static bool stopWithEntries = false, failCount = false;
+static int lockDepth, hiddenStart = -1, hiddenEnd = -1;
+static std::vector<std::string> trace;
+
+int ble_gatts_count_cfg(const ble_gatt_svc_def*);
+int ble_gatts_reset(void);
+void ble_gatts_stop(void);
+int ble_gatts_svc_set_visibility(uint16_t, int);
+void ble_hs_lock() { if (lockDepth++) std::abort(); }
+void ble_hs_unlock() { if (lockDepth != 1) std::abort(); --lockDepth; }
+bool ble_gatts_mutable() { return nativeMutable; }
+
+int ble_gatts_count_resources(const ble_gatt_svc_def* d, ble_gatt_resources* r) {
+    if (failCount) { failCount = false; return BLE_HS_EINVAL; }
+    if (!d || !r) return BLE_HS_EINVAL;
+    r->svcs += d->svcs; r->attrs += d->attrs; r->cccds += d->cccds; return 0;
+}
+void ble_att_svr_entry_free(ble_att_svr_entry* e) {
+    if (!attPoolLive) invalidAttFree = true;
+    delete e;
+}
+void ble_att_svr_hide_range(uint16_t a, uint16_t b) {
+    hiddenStart = a; hiddenEnd = b; trace.push_back("hide");
+}
+void ble_att_svr_restore_range(uint16_t a, uint16_t b) {
+    hiddenStart = a; hiddenEnd = b;
+}
+void ble_gatts_free_mem() {
+    delete[] ble_gatts_svc_entries; ble_gatts_svc_entries = nullptr;
+}
+void ble_gatts_free_svc_defs() { ble_gatts_svc_defs = nullptr; ble_gatts_num_svc_defs = 0; }
+void ble_att_svr_stop() {
+    stopWithEntries = ble_att_svr_list.first || ble_att_svr_hidden_list.first;
+    attPoolLive = false;
+}
+
+class NimBLEService {
+public:
+    explicit NimBLEService(uint16_t h) : handle(h) {}
+    int getRemoved() const { return removed; }
+    uint16_t getHandle() const { return handle; }
+    void setRemoved(int r) { removed = r; }
+    void setHandle(uint16_t h) { handle = h; }
+private:
+    uint16_t handle;
+    int removed = 0;
+};
+class NimBLEServer {
+public:
+    std::vector<NimBLEService*> m_svcVec;
+    bool serviceChanged = false;
+    void setServiceChanged() { serviceChanged = true; }
+    void removeService(NimBLEService*, bool);
+};
+
+@@ATT_RESET@@
+@@SERVICE_VISIBILITY@@
+@@COUNT_CFG@@
+@@GATTS_RESET@@
+@@GATTS_STOP@@
+@@REMOVE_SERVICE@@
+
+static constexpr int kConnections = MYNEWT_VAL(BLE_MAX_CONNECTIONS);
+static constexpr int kBaseServices = 4, kBaseAttrs = 23, kBaseCccds = 2;
+static constexpr uint16_t kManagedHandle = 0x40;
+static const ble_gatt_svc_def gap{1,3,0}, gatt{1,8,1}, fixtureA{1,7,1},
+                               fixtureB{1,5,0}, temp{1,3,0};
+
+static void pushAtt(ble_att_svr_entry_list& q) {
+    auto* e = new ble_att_svr_entry{nullptr};
+    if (!q.first) { q.first = e; return; }
+    auto* p = q.first; while (p->ha_next) p = p->ha_next; p->ha_next = e;
+}
+static void clearAtt() {
+    while (ble_att_svr_list.first) { auto* p=ble_att_svr_list.first; ble_att_svr_list.first=p->ha_next; delete p; }
+    while (ble_att_svr_hidden_list.first) { auto* p=ble_att_svr_hidden_list.first; ble_att_svr_hidden_list.first=p->ha_next; delete p; }
+}
+static void clean() {
+    delete[] ble_gatts_svc_entries; ble_gatts_svc_entries=nullptr; ble_gatts_num_svc_entries=0;
+    ble_gatts_svc_defs=nullptr; ble_gatts_num_svc_defs=0;
+    ble_hs_max_services=ble_hs_max_attrs=ble_hs_max_client_configs=0;
+    ble_gatts_num_cfgable_chrs=0; ble_att_svr_id=0; clearAtt();
+    nativeMutable=attPoolLive=true; invalidAttFree=stopWithEntries=failCount=false;
+    lockDepth=0; hiddenStart=hiddenEnd=-1; trace.clear();
+}
+static void seed(int temps, NimBLEService* service=nullptr) {
+    const int n=kBaseServices+temps;
+    ble_hs_max_services=n; ble_hs_max_attrs=kBaseAttrs+3*temps;
+    ble_hs_max_client_configs=kBaseCccds*(kConnections+1);
+    ble_gatts_num_cfgable_chrs=kBaseCccds;
+    delete[] ble_gatts_svc_entries; ble_gatts_svc_entries=new ble_gatts_svc_entry[n];
+    ble_gatts_num_svc_entries=static_cast<uint16_t>(n);
+    for(int i=0;i<n;++i) ble_gatts_svc_entries[i]={static_cast<uint16_t>(i+1),static_cast<uint16_t>(i+8),true};
+    if(temps) { ble_gatts_svc_entries[n-1].handle=kManagedHandle; if(service) service->setHandle(kManagedHandle); }
+    attPoolLive=true; pushAtt(ble_att_svr_list); pushAtt(ble_att_svr_hidden_list);
+}
+
+struct Adapter {
+    bool idleOk=true, mutationOk=true, resetOk=true, failAllocation=false;
+    bool failRegistration=false, falseSuccess=false, useRemove=false, badHandle=false;
+    int currentTemps=0, requestedTemps=0, expected=0, observed=0;
+    int capAfterReset=-1, attrsAfterReset=-1, configsAfterReset=-1;
+    bool resetClearedCfg=false, stopClearedCaps=false, stopReleasedPool=false;
+    NimBLEServer server;
+    NimBLEService managed{kManagedHandle};
+    std::vector<std::string> calls;
+    bool idle() { calls.push_back("idle"); return idleOk; }
+    bool mutate() {
+        calls.push_back("mutate"); if(!mutationOk) return false;
+        if(useRemove) {
+            if(badHandle) managed.setHandle(0xffff);
+            server.removeService(&managed,false);
+            if(!managed.getRemoved()) return false;
+        } else server.setServiceChanged();
+        currentTemps=requestedTemps; return true;
+    }
+    bool reset() {
+        calls.push_back("reset"); nativeMutable=resetOk;
+        int s=ble_hs_max_services, a=ble_hs_max_attrs, c=ble_hs_max_client_configs;
+        if(ble_gatts_reset()!=0) return false;
+        capAfterReset=ble_hs_max_services; attrsAfterReset=ble_hs_max_attrs;
+        configsAfterReset=ble_hs_max_client_configs;
+        resetClearedCfg=ble_gatts_num_cfgable_chrs==0;
+        trace.push_back(s==capAfterReset&&a==attrsAfterReset&&c==configsAfterReset ? "reset-kept" : "reset-changed");
+        return true;
+    }
+    void stop() {
+        calls.push_back("stop"); ble_gatts_stop();
+        stopClearedCaps=!ble_hs_max_services&&!ble_hs_max_attrs&&!ble_hs_max_client_configs; stopReleasedPool=!attPoolLive;
+    }
+    bool start() {
+        calls.push_back("start"); nativeMutable=true;
+        if(ble_gatts_reset()!=0) return false; // wrapper start -> resetGATT()
+        if(ble_gatts_count_cfg(&gap)||ble_gatts_count_cfg(&gatt)||
+           ble_gatts_count_cfg(&fixtureA)||ble_gatts_count_cfg(&fixtureB)) return false;
+        for(int i=0;i<currentTemps;++i) if(ble_gatts_count_cfg(&temp)) return false;
+        if(failAllocation) return false;
+        expected=kBaseServices+currentTemps;
+        delete[] ble_gatts_svc_entries;
+        ble_gatts_svc_entries=new(std::nothrow) ble_gatts_svc_entry[expected];
+        if(!ble_gatts_svc_entries) return false;
+        attPoolLive=true; ble_gatts_num_svc_entries=static_cast<uint16_t>(expected);
+        for(int i=0;i<expected;++i) ble_gatts_svc_entries[i]={static_cast<uint16_t>(i+1),static_cast<uint16_t>(i+8),true};
+        if(currentTemps) { ble_gatts_svc_entries[expected-1].handle=kManagedHandle; managed.setHandle(kManagedHandle); }
+        else managed.setHandle(0);
+        ble_gatts_num_cfgable_chrs=kBaseCccds;
+        if(failRegistration) return false;
+        observed=falseSuccess ? expected-1 : expected; return true;
+    }
+    bool verify() {
+        calls.push_back("verify");
+        return !falseSuccess && observed==expected &&
+          ble_gatts_num_svc_entries==expected &&
+          ble_hs_max_services==kBaseServices+currentTemps &&
+          ble_hs_max_attrs==kBaseAttrs+3*currentTemps &&
+          ble_hs_max_client_configs==kBaseCccds*(kConnections+1);
+    }
+};
+
+static int checks=0, failures=0;
+static void check(bool ok,const char* label) {
+    ++checks; std::cout<<(ok?"PASS ":"FAIL ")<<label<<"\n"; if(!ok) ++failures;
+}
+static bool has(const Adapter& a,const char* key) {
+    for(const auto& x:a.calls) { if(x==key) return true; } return false;
+}
+static int at(const Adapter& a,const char* key) {
+    for(size_t i=0;i<a.calls.size();++i) { if(a.calls[i]==key) return static_cast<int>(i); } return -1;
+}
+static int traceAt(const char* key) {
+    for(size_t i=0;i<trace.size();++i) { if(trace[i]==key) return static_cast<int>(i); } return -1;
+}
+
+static void testFailures() {
+    clean(); Adapter a; a.idleOk=false;
+    check(GattRebuild::Run(a)==GattRebuild::Outcome::PreconditionsFailed && a.calls.size()==1,
+          "precondition failure precedes mutation");
+    clean(); Adapter b; b.mutationOk=false;
+    check(GattRebuild::Run(b)==GattRebuild::Outcome::MutationFailed && !has(b,"reset") && !has(b,"stop"),
+          "mutation failure precedes native reset");
+    clean(); Adapter c; c.useRemove=true; c.badHandle=true; c.requestedTemps=0; seed(1,&c.managed);
+    check(GattRebuild::Run(c)==GattRebuild::Outcome::MutationFailed && !c.managed.getRemoved() && !has(c,"reset"),
+          "void remove failure is detected before reset");
+    clean(); Adapter d; d.resetOk=false;
+    check(GattRebuild::Run(d)==GattRebuild::Outcome::ResetFailed && !has(d,"stop") && !has(d,"start"),
+          "native mutability failure stops before pool free");
+    clean(); Adapter e; e.failAllocation=true;
+    check(GattRebuild::Run(e)==GattRebuild::Outcome::RegistrationFailed && !has(e,"verify"),
+          "allocation failure is surfaced");
+    clean(); Adapter f; f.failRegistration=true;
+    check(GattRebuild::Run(f)==GattRebuild::Outcome::RegistrationFailed && !has(f,"verify"),
+          "injected registration failure is surfaced");
+    clean(); Adapter g; g.falseSuccess=true;
+    check(GattRebuild::Run(g)==GattRebuild::Outcome::VerificationFailed && has(g,"verify"),
+          "start success with absent service fails verification");
+    clean(); Adapter h; failCount=true;
+    check(GattRebuild::Run(h)==GattRebuild::Outcome::RegistrationFailed,
+          "pinned count_cfg error blocks registration");
+}
+
+static void testRemoveResetStop() {
+    clean(); Adapter a; a.useRemove=true; a.currentTemps=1; a.requestedTemps=0; seed(1,&a.managed);
+    check(GattRebuild::Run(a)==GattRebuild::Outcome::Applied, "remove-reset-stop-start-verify applies");
+    check(a.managed.getRemoved()==NIMBLE_ATT_REMOVE_HIDE && a.server.serviceChanged,
+          "pinned removeService marks removal and change intent");
+    check(hiddenStart==kManagedHandle && hiddenEnd!=-1 && traceAt("hide")<traceAt("reset-kept"),
+          "remove wrapper hides service before reset");
+    check(a.resetClearedCfg && a.capAfterReset==kBaseServices+1 &&
+          a.attrsAfterReset==kBaseAttrs+3 && a.configsAfterReset==kBaseCccds*(kConnections+1),
+          "pinned reset clears CCCD count but preserves capacities");
+    check(a.stopClearedCaps, "stop clears accumulated capacity counters");
+    check(!stopWithEntries, "ATT lists are empty before stop frees their backing pool");
+    check(!invalidAttFree, "ATT entries are returned while the pool is live");
+    check(a.stopReleasedPool && attPoolLive, "stop releases the old pool and start creates a fresh pool");
+    check(at(a,"mutate")<at(a,"reset") && at(a,"reset")<at(a,"stop") &&
+          at(a,"stop")<at(a,"start") && at(a,"start")<at(a,"verify"),
+          "production orchestration uses required order");
+    check(ble_hs_max_services==kBaseServices && ble_hs_max_attrs==kBaseAttrs,
+          "restart capacity reflects current topology");
+}
+
+static void testBoundedCycles() {
+    clean(); Adapter a; seed(0);
+    bool applied=true, exact=true, bounded=true;
+    for(int i=0;i<128;++i) {
+        int phase=i%10; a.requestedTemps=phase<5?phase:9-phase;
+        pushAtt(ble_att_svr_list); pushAtt(ble_att_svr_hidden_list);
+        a.calls.clear(); trace.clear();
+        if(GattRebuild::Run(a)!=GattRebuild::Outcome::Applied) { applied=false; break; }
+        int s=kBaseServices+a.currentTemps, attrs=kBaseAttrs+3*a.currentTemps;
+        int cfg=kBaseCccds*(kConnections+1);
+        exact=exact && ble_hs_max_services==s && ble_hs_max_attrs==attrs &&
+              ble_hs_max_client_configs==cfg;
+        bounded=bounded && ble_hs_max_services<=kBaseServices+4 &&
+                ble_hs_max_attrs<=kBaseAttrs+12 && ble_hs_max_client_configs<=cfg &&
+                !invalidAttFree && !stopWithEntries;
+    }
+    check(applied,"128 add/remove cycles complete");
+    check(exact&&bounded,"capacities stay bounded by current topology");
+}
+int main() {
+    testFailures(); testRemoveResetStop(); testBoundedCycles();
+    std::cout<<checks-failures<<"/"<<checks<<" checks passed\n";
+    return failures?1:0;
+}

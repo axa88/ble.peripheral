@@ -78,15 +78,19 @@ def make_known_bad_validator(body: str) -> str:
 
 
 def make_known_bad_gatt(body: str) -> str:
-	checked_target = (
-		'if (!cJSON_AddStringToObject(value, "targetId", WebValidation::formatId(entry.id).c_str()) ||\n'
-		'\t\t\t!cJSON_AddStringToObject(value, "name", entry.name) ||'
+	pattern = re.compile(
+		r'(?P<indent>	*)if \(!cJSON_AddStringToObject\(value, "targetId", WebValidation::formatId\(entry\.id\)\.c_str\(\)\) \|\|\n'
+		r'(?P=indent)	!cJSON_AddStringToObject\(value, "name", entry\.name\) \|\|'
 	)
-	unchecked_target = (
+	match = pattern.search(body)
+	if not match:
+		raise RuntimeError("could not find the production targetId allocation check for the known-bad proof")
+	indent = match.group("indent")
+	unchecked = (
 		'cJSON_AddStringToObject(value, "targetId", WebValidation::formatId(entry.id).c_str());\n'
-		'\t\tif (!cJSON_AddStringToObject(value, "name", entry.name) ||'
+		+ indent + 'if (!cJSON_AddStringToObject(value, "name", entry.name) ||'
 	)
-	mutated, count = body.replace(checked_target, unchecked_target, 1), body.count(checked_target)
+	mutated, count = pattern.subn(lambda _: unchecked, body, count=1)
 	if count != 1:
 		raise RuntimeError("could not remove the production targetId allocation check for the known-bad proof")
 	return mutated
