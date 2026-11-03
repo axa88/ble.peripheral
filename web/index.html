@@ -77,12 +77,13 @@ const $=id=>document.getElementById(id);
 const element=(tag,text)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
 let status=null,csrf='',polling=false,lastPeer='',lastAdvSelection='',lastVisibleOperationId='',lastSeenWorkerOperationId='';
 let localWorkerBusy=false,localPendingOperationId='',localPreviousOperationId='';
+let lastPublicationOperationId='',lastPublicationTargetId='';
 let restartPolicyPending=null;
 let gattValues=[],gattServices=[],lastGattSelection='',gattAvailable=false,gattServicesAvailable=false,gattReadyObserved=false,gattState='',gattReason='',gattServiceLimit=4,statusAvailable=false;
 const fixtureUuid=suffix=>'12345678-1234-5678-1234-56789abc'+suffix;
 const scalarFixtures=[['df01','Exponent Zero','00','235'],['df02','Exponent Positive','7F','235 x 10^127'],['df03','Exponent Negative Minimum','80','235 x 10^-128'],['df04','Exponent Negative Two','FE','2.35'],['df05','Temperature Scalar','FF','23.5']];
 const gattScenarios=[
- {name:'User Descriptions',text:()=> 'Central only: discover service '+fixtureUuid('df00')+' and READ each 0x2901. Compare exact UTF-8 bytes (no trailing NUL) and parent:\r\n'+scalarFixtures.concat([['df06','Aggregate Value'],['df07','Temperature Update Trigger']]).map(row=>fixtureUuid(row[0])+': '+row[1]).join('\r\n')+'\r\nPass: all seven exact READ-only strings; a descriptor write request is rejected with no change. Original '+fixtureUuid('def1')+' has no 0x2901.'},
+ {name:'Read-only User Descriptions',text:()=> 'Central only: discover service '+fixtureUuid('df00')+' and READ each 0x2901. Compare exact UTF-8 bytes (no trailing NUL) and parent:\r\n'+scalarFixtures.concat([['df06','Aggregate Value'],['df07','Temperature Update Trigger']]).map(row=>fixtureUuid(row[0])+': '+row[1]).join('\r\n')+'\r\nPass: all seven exact READ-only strings; a descriptor write request is rejected with no change. Original '+fixtureUuid('def1')+' has no 0x2901.'},
  {name:'Presentation Formats and signed exponents',text:()=> 'Central only: READ these five values (EB 00, sint16 raw 235) and their 0x2904:\r\n'+scalarFixtures.map(row=>fixtureUuid(row[0])+': 0E '+row[2]+' 2F 27 01 00 00 -> '+row[3]+' degrees Celsius').join('\r\n')+'\r\nPass: exact CPF bytes; signed exponents 0, 127, -128, -2, -1. Record native projection separately from interpretation; preserve precision at extreme exponents. Use a fresh boot when the canonical initial values are required.'},
  {name:'Aggregate Format',text:()=> 'Central only: '+fixtureUuid('df06')+' value EB 00 2A; local 0x2904 = 04 00 00 27 01 00 00. READ 0x2905: two uint16 little-endian handles, first '+fixtureUuid('df05')+'.0x2904, second '+fixtureUuid('df06')+'.0x2904. Compare with boot handle log. Pass: authoritative mapping gives [23.5 degrees Celsius, 42] in that order. Handle-opaque clients must report unresolved, never guess or interpret the whole value using only the local CPF. Temperature changes do not change AggregateValue.'},
  {name:'Valid Range',text:()=> 'Central only: '+fixtureUuid('df04')+' value EB 00; CPF 0E FE 2F 27 01 00 00; READ-only 0x2906 = 70 FE E8 03. Pass: raw signed-16 bounds -400 and 1000; apply parent exponent -2 for inclusive -4.00 to 10.00 degrees Celsius; baseline 2.35 is inside. No runtime range enforcement is provided.'},
@@ -94,10 +95,11 @@ const gattScenarios=[
  {name:'Add then reconnect and discover',kind:'add',serviceUuid:'12345678-1234-5678-1234-56789abce100',characteristicUuid:'12345678-1234-5678-1234-56789abce101',valueHex:'01 02',text:()=> 'Use Fill GATT Controls, then click Add service manually. Disconnect, reconnect, explicitly rediscover, and verify the new service UUID, characteristic UUID, and initial value. Record the device operation result separately from central discovery.'},
  {name:'Remove then reconnect and discover',kind:'remove',text:()=> 'Use Fill GATT Controls to select a current temporary service, then click Remove service manually. Disconnect, reconnect, explicitly rediscover, and verify that service is absent. Protected fixture services cannot be removed.'},
  {name:'Bonded cache behavior',kind:'add',serviceUuid:'12345678-1234-5678-1234-56789abce102',characteristicUuid:'12345678-1234-5678-1234-56789abce103',valueHex:'A1',text:()=> 'Use an already bonded central. With it disconnected, add a temporary service using the filled controls or remove a temporary service. Reconnect and compare the cached topology with explicit service rediscovery. Confirm existing fixture descriptors and subscriptions remain valid. Do not delete bonds; record any Service Changed event separately from the firmware operation result.'},
- {name:'Writable and ineligible User Descriptions',kind:'central',text:()=> 'Central only: discover '+fixtureUuid('df08')+'. Read its sole 0x2900 and confirm exact bytes 02 00, then read its 0x2901. Write Café as UTF-8 bytes 43 61 66 C3 A9 and read back the exact bytes; also verify a shorter and longer single-request write. Compare the original seven 0x2901 descriptors: each remains read-only and has no 0x2900. Original '+fixtureUuid('def1')+' has no 0x2901. Do not use the peripheral value controls for descriptor writes.'},
+ {name:'Writable User Description',kind:'central',text:()=> 'Central only: discover '+fixtureUuid('df08')+'. Read its sole 0x2900 and confirm exact bytes 02 00, then read its 0x2901. Write Café as UTF-8 bytes 43 61 66 C3 A9 and read back the exact bytes; also verify shorter and longer single-request writes. Do not use the peripheral value controls for descriptor writes.'},
  {name:'Unsigned Valid Range',kind:'central',text:()=> 'Central only: read '+fixtureUuid('df09')+' value 0A, its 0x2904 bytes 04 00 00 27 01 00 00, and its 0x2906 bytes 02 2A. Pass: unsigned uint8 value 10 with inclusive unitless bounds 2 through 42. This fixture reports metadata; it does not enforce the range.'},
  {name:'Unresolved raw-only Valid Range',kind:'central',text:()=> 'Central only: read '+fixtureUuid('df10')+' value 0A 00 and its 0x2906 bytes 02 00 2A 00. Confirm there is no 0x2904 or 0x2905. Preserve the raw value and report type, units, and bounds as unresolved; do not infer a numeric range from neighboring fixtures.'},
- {name:'Dual Notify and Indicate subscription diagnostics',suffix:'def5',hex:'01 02 03',text:()=> 'Use the central CCCD on '+fixtureUuid('def5')+' to select Off (0000), Notify (0001), Indicate (0002), and both (0003) where supported. Exercise Off → Notify → Indicate → Off, Off → Indicate, Indicate → Notify, and repeated selections. Publish while Off and record that the central receives no update. Review Last observed subscription and Connection freshness above: values are the latest observed onSubscribe events for current connections; no event means unknown, not Off, and disconnect clears the observation. The subscription selected by each peer determines its effective update kind; the Web publish method name does not force it. Fill controls and publish manually, then record actual central receipt and any asynchronous stack status separately. Selections and prefill perform no GATT action.'}
+ {name:'Dual Notify and Indicate subscription diagnostics',suffix:'def5',hex:'01 02 03',text:()=> 'Use the central CCCD on '+fixtureUuid('def5')+' to select Off (0000), Notify (0001), Indicate (0002), and both (0003) where supported. Exercise Off → Notify → Indicate → Off, Off → Indicate, Indicate → Notify, and repeated selections. Publish while Off and record that the central receives no update. Review Last observed subscription and Connection freshness above: values are the latest observed onSubscribe events for current connections; no event means unknown, not Off, and disconnect clears the observation. Compare connectedPeerCount with observedSubscribedPeerCount; a dual-subscribed peer counts once. The subscription selected by each peer determines its effective update kind; the Web publish method name does not force it. Fill controls and publish manually, then record actual central receipt and any asynchronous stack status separately. Selections and prefill perform no GATT action.'},
+ {name:'Subscription and publication diagnostics',kind:'central',text:()=> 'Review connectedPeerCount and observedSubscribedPeerCount for ef2, ef3, df05, and ef5. The first includes every connected peer; the second counts currently connected peers with an observed enabled CCCD for that target. Off and missing observations do not count; a dual-enabled CCCD counts one peer once. Review characteristic-level statuses for ef2, ef3, and ef5 separately: status counts are callback events, not requested updates or proof of transmission or receipt, and statuses have no peer attribution. If the observed subscribed count is zero, peer dispatch and client receipt are not established. This scenario is inspection only; selecting or prefilling controls performs no device operation.'}
 ];
 const pairNodes=new Map();
 const submittedFields=new Map();
@@ -302,6 +304,11 @@ function gattPublicationContext(item){
  const maxLength=Number(item.maxLength),publicationLimit=Number(item.publicationLimit),sendLimit=effectiveGattSendLimit(item);
  const snapshot=gattPeerLimitSnapshot(item);
  let message='Current publication limit: '+publicationLimit+' bytes. Maximum single update: '+sendLimit+' bytes (stored maximum '+maxLength+' bytes; Web cap 256 bytes).';
+ const observedSubscribedPeerCount=Number(item.observedSubscribedPeerCount);
+ if(Number.isInteger(observedSubscribedPeerCount)&&observedSubscribedPeerCount>=0){
+  if(observedSubscribedPeerCount===0)message+=' No subscribed peer observed; peer dispatch and client receipt are not established.';
+  else message+=' Observed subscribed peer count: '+observedSubscribedPeerCount+'; this observation does not prove transmission or client receipt.';
+ }else message+=' Observed subscribed peer count is unavailable.';
  if(snapshot.noPeers)return message+' No connected peers are reported; nobody can receive an update now. Send only changes the stored value.';
  if(!snapshot.valid)return message+' Connection details are refreshing; the server-reported publication limit is authoritative.';
  if(snapshot.peerBound){
@@ -358,8 +365,9 @@ function updateGattDraft(item=selectedGatt()){
 }
 function renderGattSelection(){
  const item=selectedGattForDisplay(),changed=lastGattSelection!==$('gattTarget').value;
+ const properties=item?['READ','WRITE','NOTIFY','INDICATE'].filter((property,index)=>[item.read,item.write,item.notify,item.indicate][index]).join(' | '):'';
  if(changed){lastGattSelection=$('gattTarget').value;$('gattHex').dataset.dirty='false';$('gattHex').dataset.editVersion=String((Number($('gattHex').dataset.editVersion)||0)+1);}
- $('gattIdentity').textContent=item?'Service: '+item.serviceUuid+'\r\nCharacteristic: '+item.characteristicUuid+'\r\nInstance: '+item.targetId+'\r\nProperties: READ'+(item.characteristicUuid===fixtureUuid('df05')?'':' | WRITE')+(item.notify?' | NOTIFY':' | INDICATE'):'';
+ $('gattIdentity').textContent=item?'Service: '+item.serviceUuid+'\r\nCharacteristic: '+item.characteristicUuid+'\r\nInstance: '+item.targetId+'\r\nProperties: '+properties:'';
  $('gattCurrent').textContent=item?(spacedHex(item.currentHex)||'(empty)'):'Unavailable';
  $('gattLimit').textContent=item?gattPublicationContext(item):'';
  $('gattPublish').textContent=!item?'Send value':item.notify&&item.indicate?'Send update':item.indicate?'Send indication':'Send notification';
@@ -416,18 +424,32 @@ function renderGattInventory(){
  }
 }
 function isSubscriptionDiagnostics(data){
+ const subscriptionUuids=['12345678-1234-5678-1234-56789abcdef2','12345678-1234-5678-1234-56789abcdef3',
+  '12345678-1234-5678-1234-56789abcdf05','12345678-1234-5678-1234-56789abcdef5'];
+ const statusUuids=subscriptionUuids.filter(uuid=>uuid!=='12345678-1234-5678-1234-56789abcdf05');
  if(!data||typeof data!=='object'||Array.isArray(data)||!Number.isInteger(data.currentConnectionCount)||data.currentConnectionCount<0||
   !Number.isInteger(data.maximumEntries)||data.maximumEntries<0||typeof data.subscriptionSemantics!=='string'||typeof data.publicationStatusSemantics!=='string'||
   !Array.isArray(data.lastObservedSubscriptions)||!Array.isArray(data.lastPublicationStatuses)||
-  data.lastObservedSubscriptions.length>data.maximumEntries||data.lastPublicationStatuses.length>data.maximumEntries)return false;
+  data.lastObservedSubscriptions.length>data.maximumEntries||data.lastPublicationStatuses.length>3)return false;
+ const subscriptionKeys=new Set();
  for(const item of data.lastObservedSubscriptions){
-  if(!item||typeof item!=='object'||typeof item.connectionId!=='string'||typeof item.peerAddress!=='string'||typeof item.characteristicUuid!=='string'||
-   !/^(0000|0001|0002|0003)$/.test(item.cccdValue)||!Number.isInteger(item.observedAtUptimeMs)||item.connectionFreshness!=='current')return false;
+  if(!item||typeof item!=='object'||typeof item.connectionId!=='string'||typeof item.peerAddress!=='string'||
+   !subscriptionUuids.includes(item.characteristicUuid)||!/^(0000|0001|0002|0003)$/.test(item.cccdValue)||
+   !Number.isInteger(item.observedAtUptimeMs)||item.observedAtUptimeMs<0||item.connectionFreshness!=='current')return false;
+  const key=item.connectionId+'/'+item.characteristicUuid;
+  if(subscriptionKeys.has(key))return false;
+  subscriptionKeys.add(key);
  }
+ const statusUuidsSeen=new Set();
  for(const item of data.lastPublicationStatuses){
-  if(!item||typeof item!=='object'||typeof item.connectionId!=='string'||typeof item.peerAddress!=='string'||typeof item.characteristicUuid!=='string'||
+  if(!item||typeof item!=='object'||Object.prototype.hasOwnProperty.call(item,'connectionId')||
+   Object.prototype.hasOwnProperty.call(item,'peerAddress')||Object.prototype.hasOwnProperty.call(item,'connectionFreshness')||!statusUuids.includes(item.characteristicUuid)||
    !Number.isInteger(item.statusCode)||!['NotificationTx','IndicationAcknowledged','Error'].includes(item.statusKind)||
-   !Number.isInteger(item.observedAtUptimeMs)||item.connectionFreshness!=='current')return false;
+   !Number.isInteger(item.observedAtUptimeMs)||item.observedAtUptimeMs<0||
+   !Number.isInteger(item.notificationTxCount)||item.notificationTxCount<0||
+   !Number.isInteger(item.indicationAcknowledgedCount)||item.indicationAcknowledgedCount<0||
+   !Number.isInteger(item.errorCount)||item.errorCount<0||statusUuidsSeen.has(item.characteristicUuid))return false;
+  statusUuidsSeen.add(item.characteristicUuid);
  }
  return true;
 }
@@ -447,19 +469,26 @@ function renderGattSubscriptionDiagnostics(data){
  if(data.lastPublicationStatuses.length){
   for(const item of data.lastPublicationStatuses){
    const label=item.statusKind==='NotificationTx'?'Notification TX status':item.statusKind==='IndicationAcknowledged'?'Indication acknowledgement':'NimBLE publication error';
-   lines.push('Last asynchronous publication status: '+label+' (code '+item.statusCode+') for '+item.characteristicUuid+' and '+item.peerAddress+' at device uptime '+item.observedAtUptimeMs+' ms. Connection freshness: '+item.connectionFreshness+'. BLE stack status does not prove client-application receipt.');
+   lines.push('Last asynchronous publication status: '+label+' (code '+item.statusCode+') for '+item.characteristicUuid+' at device uptime '+item.observedAtUptimeMs+' ms. Counts: notification TX '+item.notificationTxCount+', indication acknowledged '+item.indicationAcknowledgedCount+', errors/timeouts '+item.errorCount+'. Counts are observed callback events; BLE status does not prove peer dispatch or client-application receipt.');
   }
  }else{
-  lines.push('Last asynchronous publication status: no status callback was observed for the current peer connection(s).');
+  lines.push('Last asynchronous publication status: no characteristic status callback was observed for ef2, ef3, or ef5.');
  }
- lines.push('Bound: at most '+data.maximumEntries+' latest peer/characteristic record(s). '+data.subscriptionSemantics+' '+data.publicationStatusSemantics);
+ lines.push('Bound: at most '+data.maximumEntries+' latest peer/characteristic subscription record(s) and 3 characteristic-level status record(s). '+data.subscriptionSemantics+' '+data.publicationStatusSemantics);
  output.textContent=lines.join('\n');
+}
+function isGattValueSnapshot(item){
+ return !!item&&typeof item==='object'&&!Array.isArray(item)&&typeof item.targetId==='string'&&typeof item.name==='string'&&
+  typeof item.serviceUuid==='string'&&typeof item.characteristicUuid==='string'&&typeof item.read==='boolean'&&typeof item.write==='boolean'&&
+  typeof item.notify==='boolean'&&typeof item.indicate==='boolean'&&Number.isInteger(item.observedSubscribedPeerCount)&&item.observedSubscribedPeerCount>=0&&
+  Number.isInteger(item.connectedPeerCount)&&item.connectedPeerCount>=0;
 }
 function isGattSnapshotEnvelope(data){
  if(!data||typeof data!=='object'||Array.isArray(data))return false;
  if(typeof data.state!=='string'||typeof data.valuesAvailable!=='boolean'||typeof data.servicesAvailable!=='boolean')return false;
  const valuesArray=Array.isArray(data.values),servicesArray=Array.isArray(data.services);
  return (valuesArray||data.values===null)&&(servicesArray||data.services===null)&&
+  (!valuesArray||data.values.every(isGattValueSnapshot))&&
   data.valuesAvailable===valuesArray&&data.servicesAvailable===servicesArray&&isSubscriptionDiagnostics(data.subscriptionDiagnostics);
 }
 function renderGatt(data,requestReason=''){
@@ -548,7 +577,12 @@ function publishGatt(){
  if(count>limit){updateGattDraft(item);throw Error(gattPublicationError(item,count));}
  const hex=parseGattHex(draft);
  $('gattHex').value=spacedHex(hex);markDirty(['gattHex']);
- return post('gatt','publishValue',{targetId:item.targetId,hex},['gattHex']);
+ return post('gatt','publishValue',{targetId:item.targetId,hex},['gattHex']).then(response=>{
+  if(response&&response.result==='Queued'&&response.operationId){
+   lastPublicationOperationId=response.operationId;lastPublicationTargetId=item.targetId;
+  }
+  return response;
+ });
 }
 function renderSelection(){
  if(!status)return;
@@ -698,7 +732,7 @@ function setWorkerAvailability(data){
 function renderStatus(data){
  const previousToken=csrf;status=data;statusAvailable=true;csrf=data.csrfToken||'';
  const operationError=data.lastOperation&&data.lastOperation.error;if(operationError&&operationError.code==='gatt_recovery_required')gattReadyObserved=false;
- if(previousToken&&csrf&&previousToken!==csrf){for(const id of submittedFields.keys())clearSubmittedFields(id);lastSeenWorkerOperationId='';lastVisibleOperationId='';localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';restartPolicyPending=null;gattAvailable=false;gattServicesAvailable=false;gattReadyObserved=false;gattState='';gattReason='Device session changed; refreshing GATT state.';}
+ if(previousToken&&csrf&&previousToken!==csrf){for(const id of submittedFields.keys())clearSubmittedFields(id);lastSeenWorkerOperationId='';lastVisibleOperationId='';localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';lastPublicationOperationId='';lastPublicationTargetId='';restartPolicyPending=null;gattAvailable=false;gattServicesAvailable=false;gattReadyObserved=false;gattState='';gattReason='Device session changed; refreshing GATT state.';}
  observeWorker(data.lastOperation);
  const device=data.device||{},network=data.network||{},caps=data.capabilities||{},ads=data.advertising||[],bonds=data.bonds||[],peers=data.connections||[];
  $('connection').textContent=(device.name||'Peripheral')+' - '+(network.ip||'network unavailable');
@@ -721,7 +755,14 @@ function renderStatus(data){
  renderOverview(data);
  const operation=data.lastOperation;
  const waitingForCurrent=localWorkerBusy&&localPendingOperationId&&operation&&operation.operationId===localPreviousOperationId;
- $('lastOperation').textContent=waitingForCurrent?'Waiting for operation '+localPendingOperationId+' to appear in device status.':operation?JSON.stringify(operation,null,2):localWorkerBusy?'Waiting for device operation status.':'No queued operation.';
+ const publicationTarget=operation&&operation.operation==='publishValue'&&operation.state==='Done'&&operation.result==='Dispatched'&&
+  operation.operationId===lastPublicationOperationId?gattValues.find(item=>item.targetId===lastPublicationTargetId):null;
+ const publicationObservation=publicationTarget?
+  Number(publicationTarget.observedSubscribedPeerCount)===0?
+   '\nNo subscribed peer observed; peer dispatch and client receipt are not established.':
+   '\nObserved subscribed peer count: '+publicationTarget.observedSubscribedPeerCount+'; this snapshot does not prove transmission or client receipt.':'';
+ $('lastOperation').textContent=(waitingForCurrent?'Waiting for operation '+localPendingOperationId+' to appear in device status.':
+  operation?JSON.stringify(operation,null,2):localWorkerBusy?'Waiting for device operation status.':'No queued operation.')+publicationObservation;
  $('operationData').textContent=!waitingForCurrent&&operation&&operation.data?JSON.stringify(operation.data,null,2):'';
  if(operation&&operation.operation==='readPeerLink'&&operation.state==='Done'&&operation.data&&operation.data.connectionId===$('peer').value)$('linkInfo').textContent=JSON.stringify(operation.data,null,2);
  setWorkerAvailability(data);

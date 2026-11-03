@@ -64,6 +64,39 @@ def extract_function(source: str, signature: str) -> str:
             if depth == 0: return source[at:i + 1]
     fail(f"unterminated production helper: {signature}")
 
+def extract_declaration(source: str, signature: str) -> str:
+    start = source.find(signature)
+    if start < 0: fail(f"production declaration missing: {signature}")
+    brace = source.find("{", start + len(signature))
+    if brace < 0: fail(f"production declaration has no body: {signature}")
+    depth = 0
+    state = "code"
+    escaped = False
+    for index in range(brace, len(source)):
+        char = source[index]
+        following = source[index + 1] if index + 1 < len(source) else ""
+        if state == "line":
+            if char == "\n": state = "code"
+        elif state == "block":
+            if char == "*" and following == "/": state = "code"
+        elif state in ("string", "char"):
+            if escaped: escaped = False
+            elif char == "\\": escaped = True
+            elif (state == "string" and char == '"') or (state == "char" and char == "'"):
+                state = "code"
+        elif char == "/" and following == "/": state = "line"
+        elif char == "/" and following == "*": state = "block"
+        elif char == '"': state = "string"
+        elif char == "'": state = "char"
+        elif char == "{": depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = source.find(";", index)
+                if end < 0: fail(f"unterminated production declaration: {signature}")
+                return source[start:end + 1]
+    fail(f"unterminated production declaration: {signature}")
+
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
     source_path = root / "src/dynamicGatt.cpp"
@@ -114,7 +147,45 @@ def main() -> int:
     print("Compiling production FixtureIdentity capture/verify with native GATT lookup stubs")
     subprocess.run(command, check=True, env=env)
     subprocess.run([str(exe)], check=True, env=env)
-    print(f"Generated files retained in {outdir}")
+    print(f"PASS model-only FixtureIdentity regression; generated files retained in {outdir}")
+
+    dynamic_functions = {
+        "@@SERVER@@": extract_function(source, "NimBLEServer* server()"),
+        "@@PROTECTED_SERVICES@@": extract_function(source, "std::array<NimBLEService*, 2> protectedServices()"),
+        "@@NATIVE_IDLE@@": extract_function(source, "bool nativeIdle()"),
+        "@@READ_EQUALS@@": extract_function(source, "bool readEquals(uint16_t handle, const uint8_t* bytes, size_t length)"),
+        "@@NATIVE_CHARACTERISTIC@@": extract_function(source, "bool nativeCharacteristic(NimBLEService* svc, NimBLECharacteristic* chr)"),
+        "@@IDENTITY_STRUCTS@@": identity_types,
+        "@@UNAVAILABLE@@": extract_function(source, "Result unavailable()"),
+        "@@PROTECTED_UUID@@": extract_function(source, "bool protectedUuid(const NimBLEUUID& id)"),
+        "@@VALIDATE_ADD@@": extract_function(source, "Result validateAdd("),
+        "@@NATIVE_OPERATION@@": extract_declaration(source, "struct NativeOperation"),
+        "@@APPLY@@": extract_function(source, "Result apply("),
+        "@@ENTRY_METHODS@@": extract_function(source, "Entry::Entry(bool requireReady)") + "\n" +
+            extract_function(source, "Entry::~Entry()"),
+        "@@READY@@": extract_function(source, "bool Ready()"),
+        "@@CANONICAL_UUID@@": extract_function(source, "bool CanonicalUuid(std::string_view input, std::string& normalized)"),
+        "@@ADD_SERVICE@@": extract_function(source, "Result AddService("),
+        "@@REMOVE_SERVICE@@": extract_function(source, "Result RemoveService(ConnectionId id)"),
+    }
+    integrated_template = (root / "test/dynamic_topology_native/integrated_rebuild.cpp.in").read_text(encoding="utf-8")
+    integrated_replacements = dict(dynamic_functions)
+    for marker, value in integrated_replacements.items():
+        if marker not in integrated_template: fail(f"integrated template marker missing: {marker}")
+        integrated_template = integrated_template.replace(marker, value)
+    if "@@" in integrated_template: fail("unresolved integrated source marker")
+    integrated_cpp = outdir / "integrated_rebuild.cpp"
+    integrated_exe = outdir / "integrated_rebuild.exe"
+    integrated_cpp.write_bytes(integrated_template.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+    adapter = root / "test/descriptor_fixture_native/adapter.cpp"
+    stub_include = root / "test/descriptor_fixture_native/include"
+    integrated_command = [str(compiler), "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DBLE_INTERFACE_MODE=0",
+        "-I" + str(stub_include), "-I" + str(root / "src"), str(root / "src/fixtureGatt.cpp"),
+        str(adapter), str(integrated_cpp), "-o", str(integrated_exe)]
+    print("Compiling actual FixtureGatt creation/finalization with the maintained NimBLE adapter and production DynamicGatt add/remove logic")
+    subprocess.run(integrated_command, check=True, env=env)
+    subprocess.run([str(integrated_exe)], check=True, env=env)
+    print(f"PASS integrated production add/remove rebuild regression; generated files retained in {outdir}")
     return 0
 
 if __name__ == "__main__":

@@ -630,15 +630,21 @@ async function main() {
     currentConnectionCount: 3,
     maximumEntries: 12,
     subscriptionSemantics: 'Each value is the latest observed onSubscribe callback for a current connection. Absence means no event was observed; it does not mean Off. Disconnect clears observations.',
-    publicationStatusSemantics: 'Asynchronous connection-scoped NimBLE status only: code 0 is notification TX status, BLE_HS_EDONE is indication acknowledgement, and other nonzero codes are errors. None proves client-application receipt.',
+    publicationStatusSemantics: 'Characteristic-level asynchronous NimBLE status only: code 0 is notification TX, BLE_HS_EDONE is indication acknowledgement, and other nonzero codes are errors/timeouts. Counts are observed callback events; they do not prove peer dispatch or client-application receipt.',
     lastObservedSubscriptions: [
-      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', cccdValue: '0000', observedAtUptimeMs: 1001, connectionFreshness: 'current'},
-      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', cccdValue: '0003', observedAtUptimeMs: 1002, connectionFreshness: 'current'}
+      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', cccdValue: '0000', observedAtUptimeMs: 1001, connectionFreshness: 'current'},
+      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', cccdValue: '0001', observedAtUptimeMs: 1002, connectionFreshness: 'current'},
+      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', cccdValue: '0002', observedAtUptimeMs: 1003, connectionFreshness: 'current'},
+      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', cccdValue: '0000', observedAtUptimeMs: 1004, connectionFreshness: 'current'},
+      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', cccdValue: '0001', observedAtUptimeMs: 1101, connectionFreshness: 'current'},
+      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', cccdValue: '0002', observedAtUptimeMs: 1102, connectionFreshness: 'current'},
+      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', cccdValue: '0001', observedAtUptimeMs: 1103, connectionFreshness: 'current'},
+      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', cccdValue: '0003', observedAtUptimeMs: 1104, connectionFreshness: 'current'}
     ],
     lastPublicationStatuses: [
-      {connectionId: 'peer-23a', peerAddress: peer23a.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', statusCode: 0, statusKind: 'NotificationTx', observedAtUptimeMs: 1101, connectionFreshness: 'current'},
-      {connectionId: 'peer-23b', peerAddress: peer23b.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', statusCode: 123, statusKind: 'IndicationAcknowledged', observedAtUptimeMs: 1102, connectionFreshness: 'current'},
-      {connectionId: 'peer-517', peerAddress: peer517.address, characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', statusCode: -99, statusKind: 'Error', observedAtUptimeMs: 1103, connectionFreshness: 'current'}
+      {characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', statusCode: 0, statusKind: 'NotificationTx', observedAtUptimeMs: 1101, notificationTxCount: 3, indicationAcknowledgedCount: 0, errorCount: 0},
+      {characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', statusCode: 123, statusKind: 'IndicationAcknowledged', observedAtUptimeMs: 1102, notificationTxCount: 0, indicationAcknowledgedCount: 2, errorCount: 0},
+      {characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', statusCode: -99, statusKind: 'Error', observedAtUptimeMs: 1103, notificationTxCount: 0, indicationAcknowledgedCount: 0, errorCount: 1}
     ]
   };
   assert.equal(indicationBaseline.length / 2, 23);
@@ -651,10 +657,10 @@ async function main() {
   ];
   context.testGatt = {state: 'Ready', valuesAvailable: true, servicesAvailable: true, serviceLimit: 4, services: dynamicServices,
     subscriptionDiagnostics: gattSubscriptionDiagnostics, values: [
-    { targetId: '0123456789abcdef-00000001', name: 'Original notification', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', notify: true, indicate: false, currentHex: '0102', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
-    { targetId: '0123456789abcdef-00000002', name: 'Original indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', notify: false, indicate: true, currentHex: indicationBaseline, maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
-    { targetId: '0123456789abcdef-00000003', name: 'Temperature Scalar', serviceUuid: 'fixture', characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', notify: true, indicate: false, currentHex: 'EB00', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
-    { targetId: '0123456789abcdef-00000004', name: 'Dual notification and indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', notify: true, indicate: true, currentHex: '010203', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 }
+    { targetId: '0123456789abcdef-00000001', name: 'Original notification', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef2', read: true, write: true, notify: true, indicate: false, observedSubscribedPeerCount: 1, currentHex: '0102', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
+    { targetId: '0123456789abcdef-00000002', name: 'Original indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef3', read: true, write: true, notify: false, indicate: true, observedSubscribedPeerCount: 1, currentHex: indicationBaseline, maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
+    { targetId: '0123456789abcdef-00000003', name: 'Temperature Scalar', serviceUuid: 'fixture', characteristicUuid: '12345678-1234-5678-1234-56789abcdf05', read: true, write: false, notify: true, indicate: false, observedSubscribedPeerCount: 0, currentHex: 'EB00', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 },
+    { targetId: '0123456789abcdef-00000004', name: 'Dual notification and indication', serviceUuid: 'original', characteristicUuid: '12345678-1234-5678-1234-56789abcdef5', read: true, write: false, notify: true, indicate: true, observedSubscribedPeerCount: 2, currentHex: '010203', maxLength: 512, publicationLimit: 20, minimumPeerMtu: 23, connectedPeerCount: 3 }
   ] };
   vm.runInContext('renderGatt(testGatt)', context);
   assert.equal(vm.runInContext('isSubscriptionDiagnostics(testGatt.subscriptionDiagnostics)', context), true,
@@ -669,7 +675,39 @@ async function main() {
   assert.match(get('gattSubscriptionDiagnostics').textContent, /Indication acknowledgement/);
   assert.match(get('gattSubscriptionDiagnostics').textContent, /NimBLE publication error/);
   assert.match(get('gattSubscriptionDiagnostics').textContent, /does not mean Off/);
-  assert.match(get('gattSubscriptionDiagnostics').textContent, /does not prove client-application receipt/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /does not prove peer dispatch or client-application receipt/);
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /Counts: notification TX 3, indication acknowledged 0, errors\/timeouts 0/);
+  const publicationStatusLines = get('gattSubscriptionDiagnostics').textContent.split('\n')
+    .filter(line => line.startsWith('Last asynchronous publication status:'));
+  assert.equal(publicationStatusLines.length, 3, 'Each allowlisted characteristic has one status record');
+  assert.doesNotMatch(publicationStatusLines.join('\n'), /11:22:33:44:55:66|22:33:44:55:66:77|peer-23a|peer-23b/,
+    'Characteristic-level publication status never names a peer');
+  assert.match(get('gattSubscriptionDiagnostics').textContent, /Last observed subscription: .* for 11:22:33:44:55:66/,
+    'Peer identity remains scoped to the subscription observation records');
+  assert.ok(get('gattIdentity').textContent.includes('Properties: READ | WRITE | NOTIFY'));
+  assert.match(get('gattLimit').textContent, /Observed subscribed peer count: 1/);
+  const expectedProperties = [
+    'Properties: READ | WRITE | NOTIFY',
+    'Properties: READ | WRITE | INDICATE',
+    'Properties: READ | NOTIFY',
+    'Properties: READ | NOTIFY | INDICATE'
+  ];
+  for (let index = 0; index < context.testGatt.values.length; index++) {
+    get('gattTarget').value = context.testGatt.values[index].targetId;
+    vm.runInContext('renderGattSelection()', context);
+    assert.ok(get('gattIdentity').textContent.includes(expectedProperties[index]),
+      'The characteristic identity uses the serialized read/write/notify/indicate flags');
+  }
+  get('gattTarget').value = context.testGatt.values[2].targetId;
+  vm.runInContext('renderGattSelection()', context);
+  assert.match(get('gattLimit').textContent, /No subscribed peer observed; peer dispatch and client receipt are not established/);
+  get('gattTarget').value = context.testGatt.values[0].targetId;
+  vm.runInContext('renderGattSelection()', context);
+  const malformedTargetEnvelope = {...context.testGatt, values: context.testGatt.values.map((item, index) =>
+    index === 0 ? {...item, read: undefined} : item)};
+  context.malformedTargetEnvelope = malformedTargetEnvelope;
+  assert.equal(vm.runInContext('isGattSnapshotEnvelope(malformedTargetEnvelope)', context), false,
+    'Targets without the full characteristic property contract are rejected');
   const missingDiagnosticsEnvelope = {...context.testGatt};
   delete missingDiagnosticsEnvelope.subscriptionDiagnostics;
   context.missingDiagnosticsEnvelope = missingDiagnosticsEnvelope;
@@ -696,6 +734,15 @@ async function main() {
     lastPublicationStatuses: [{...gattSubscriptionDiagnostics.lastPublicationStatuses[0], statusKind: 'Delivered'}]};
   assert.equal(vm.runInContext('isSubscriptionDiagnostics(invalidSubscriptionDiagnostics)', context), false,
     'Publication status cannot claim client delivery');
+  context.invalidSubscriptionDiagnostics = {...gattSubscriptionDiagnostics,
+    lastPublicationStatuses: [{...gattSubscriptionDiagnostics.lastPublicationStatuses[0], peerAddress: peer23a.address}]};
+  assert.equal(vm.runInContext('isSubscriptionDiagnostics(invalidSubscriptionDiagnostics)', context), false,
+    'Characteristic-level publication status does not accept peer-attributed fields');
+  context.invalidSubscriptionDiagnostics = {...gattSubscriptionDiagnostics,
+    lastPublicationStatuses: [...gattSubscriptionDiagnostics.lastPublicationStatuses,
+      {...gattSubscriptionDiagnostics.lastPublicationStatuses[0], characteristicUuid: '12345678-1234-5678-1234-56789abcdef2'}]};
+  assert.equal(vm.runInContext('isSubscriptionDiagnostics(invalidSubscriptionDiagnostics)', context), false,
+    'Publication status stays bounded to one record per supported characteristic');
   assert.equal(get('gattHex').value, '01 02');
   assert.equal(get('gattCurrent').textContent, '01 02');
   assert.equal(get('gattRestore'), null);
@@ -780,6 +827,7 @@ async function main() {
   assert.doesNotMatch(get('feedback').textContent, /Dispatched|delivered|receipt/i,
     'A queued response does not claim publication or client receipt');
 
+  context.testGatt.values[1].observedSubscribedPeerCount = 0;
   context.testStatus = status({connections: [peer517], lastOperation: {
     operationId: 'gatt-op-1', operation: 'publishValue', target: 'gatt', state: 'Done', result: 'Dispatched',
     detail: 'Value stored; NimBLE accepted/queued the characteristic update request. Peer dispatch and client-application receipt are not proven.',
@@ -788,6 +836,8 @@ async function main() {
   vm.runInContext('renderStatus(testStatus)', context);
   assert.match(get('lastOperation').textContent, /NimBLE accepted\/queued the characteristic update request/);
   assert.match(get('lastOperation').textContent, /Peer dispatch and client-application receipt are not proven/);
+  assert.match(get('lastOperation').textContent, /No subscribed peer observed; peer dispatch and client receipt are not established/,
+    'The completed publish result reports zero observed subscribers without claiming peer receipt');
   context.testGatt.values[1].currentHex = indicationBaseline;
   vm.runInContext('renderGatt(testGatt)', context);
   assert.equal(get('gattHex').value, indicationSpaced);
@@ -960,7 +1010,7 @@ async function main() {
   vm.runInContext("shownPollErrors.delete('GATT status');renderGatt(testGatt)", context);
   assert.equal(get('gattAddService').disabled, false, 'Add is enabled with a current inventory and no peers or directed advertising');
   assert.equal(get('gattRemoveService').disabled, false, 'A current temporary service can be selected for removal');
-  assert.equal(vm.runInContext('gattScenarios.length', context), 16, 'All existing scenarios remain, with four appended descriptor and subscription scenarios');
+  assert.equal(vm.runInContext('gattScenarios.length', context), 17, 'All existing scenario IDs remain and the diagnostics scenario is appended');
   get('gattScenario').value = '9'; get('gattScenario').onchange();
   assert.match(get('gattScenarioInfo').textContent, /click Add service manually/);
   const postsBeforePrefill = gattPosts.length;
@@ -993,12 +1043,14 @@ async function main() {
   assert.deepEqual(gattPosts.at(-1), {url: '/api/gatt', body: {op: 'removeService', serviceId: temporaryServiceId}});
   vm.runInContext("localWorkerBusy=false;localPendingOperationId='';localPreviousOperationId='';", context);
 
-  assert.equal(vm.runInContext('gattScenarios.length', context), 16,
-    'All existing scenarios remain, with four appended descriptor and subscription scenarios');
+  assert.equal(vm.runInContext('gattScenarios.length', context), 17,
+    'All existing scenario IDs remain and the diagnostics scenario is appended');
   const centralScenarios = [
+    ['0', /all seven exact READ-only strings/],
     ['12', /sole 0x2900/],
     ['13', /unsigned uint8 value 10/],
-    ['14', /type, units, and bounds as unresolved/]
+    ['14', /type, units, and bounds as unresolved/],
+    ['16', /connectedPeerCount and observedSubscribedPeerCount/]
   ];
   const beforeCentralPrefill = {
     target: get('gattTarget').value,

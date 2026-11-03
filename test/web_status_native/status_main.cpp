@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <utility>
 
 namespace
 {
@@ -296,8 +297,6 @@ namespace
 #if !EXPECT_KNOWN_BAD
 	bool verifySubscriptionDiagnosticsShape(const cJSON* diagnostics)
 	{
-		if (!WebStatusTest::hasExactObjectKeys(diagnostics, {"currentConnectionCount", "maximumEntries",
-			"subscriptionSemantics", "publicationStatusSemantics", "lastObservedSubscriptions", "lastPublicationStatuses"})) return false;
 		const cJSON* currentConnections = cJSON_GetObjectItemCaseSensitive(diagnostics, "currentConnectionCount");
 		const cJSON* maximumEntries = cJSON_GetObjectItemCaseSensitive(diagnostics, "maximumEntries");
 		const cJSON* subscriptionSemantics = cJSON_GetObjectItemCaseSensitive(diagnostics, "subscriptionSemantics");
@@ -305,31 +304,43 @@ namespace
 		const cJSON* subscriptions = cJSON_GetObjectItemCaseSensitive(diagnostics, "lastObservedSubscriptions");
 		const cJSON* statuses = cJSON_GetObjectItemCaseSensitive(diagnostics, "lastPublicationStatuses");
 		if (!cJSON_IsNumber(currentConnections) || currentConnections->valuedouble < 0 ||
-			currentConnections->valuedouble > static_cast<double>(BluetoothManager::MaxGattObservationEntries / 3) ||
+			currentConnections->valuedouble > static_cast<double>(BluetoothManager::MaxGattObservationEntries / 4) ||
 			!cJSON_IsNumber(maximumEntries) || maximumEntries->valuedouble != BluetoothManager::MaxGattObservationEntries ||
 			!cJSON_IsString(subscriptionSemantics) || !cJSON_IsString(publicationSemantics) ||
 			!cJSON_IsArray(subscriptions) || !cJSON_IsArray(statuses) ||
 			cJSON_GetArraySize(subscriptions) > maximumEntries->valuedouble ||
-			cJSON_GetArraySize(statuses) > maximumEntries->valuedouble) return false;
+			static_cast<size_t>(cJSON_GetArraySize(statuses)) > BluetoothManager::MaxGattPublicationStatusEntries) return false;
 		const std::string subscriptionText = subscriptionSemantics->valuestring;
 		const std::string publicationText = publicationSemantics->valuestring;
 		if (subscriptionText.find("latest observed onSubscribe") == std::string::npos ||
 			subscriptionText.find("does not mean Off") == std::string::npos ||
 			subscriptionText.find("Disconnect clears observations") == std::string::npos ||
-			publicationText.find("Asynchronous connection-scoped NimBLE status") == std::string::npos ||
-			publicationText.find("None proves client-application receipt") == std::string::npos) return false;
+			publicationText.find("Characteristic-level asynchronous NimBLE status") == std::string::npos ||
+			publicationText.find("observed callback events") == std::string::npos ||
+			publicationText.find("do not prove peer dispatch or client-application receipt") == std::string::npos) return false;
+		const auto isSubscriptionUuid = [](const char* uuid)
+		{
+			return uuid && (std::strcmp(uuid, "12345678-1234-5678-1234-56789abcdef2") == 0 ||
+				std::strcmp(uuid, "12345678-1234-5678-1234-56789abcdef3") == 0 ||
+				std::strcmp(uuid, "12345678-1234-5678-1234-56789abcdf05") == 0 ||
+				std::strcmp(uuid, "12345678-1234-5678-1234-56789abcdef5") == 0);
+		};
+		const auto isStatusUuid = [](const char* uuid)
+		{
+			return uuid && (std::strcmp(uuid, "12345678-1234-5678-1234-56789abcdef2") == 0 ||
+				std::strcmp(uuid, "12345678-1234-5678-1234-56789abcdef3") == 0 ||
+				std::strcmp(uuid, "12345678-1234-5678-1234-56789abcdef5") == 0);
+		};
 		std::set<std::string> subscriptionKeys, statusKeys;
 		for (const cJSON* item = subscriptions->child; item; item = item->next)
 		{
-			if (!WebStatusTest::hasExactObjectKeys(item, {"connectionId", "peerAddress", "characteristicUuid", "cccdValue",
-				"observedAtUptimeMs", "connectionFreshness"})) return false;
 			const char* connectionId = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "connectionId"));
 			const char* peerAddress = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "peerAddress"));
 			const char* characteristicUuid = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "characteristicUuid"));
 			const char* cccdValue = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "cccdValue"));
 			const cJSON* observedAt = cJSON_GetObjectItemCaseSensitive(item, "observedAtUptimeMs");
 			const char* freshness = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "connectionFreshness"));
-			if (!connectionId || !peerAddress || !characteristicUuid || !cccdValue || !observedAt ||
+			if (!connectionId || !peerAddress || !isSubscriptionUuid(characteristicUuid) || !cccdValue || !observedAt ||
 				!cJSON_IsNumber(observedAt) || observedAt->valuedouble < 0 || !freshness || std::strcmp(freshness, "current") != 0 ||
 				(std::strcmp(cccdValue, "0000") != 0 && std::strcmp(cccdValue, "0001") != 0 &&
 				 std::strcmp(cccdValue, "0002") != 0 && std::strcmp(cccdValue, "0003") != 0)) return false;
@@ -337,20 +348,27 @@ namespace
 		}
 		for (const cJSON* item = statuses->child; item; item = item->next)
 		{
-			if (!WebStatusTest::hasExactObjectKeys(item, {"connectionId", "peerAddress", "characteristicUuid", "statusCode",
-				"statusKind", "observedAtUptimeMs", "connectionFreshness"})) return false;
-			const char* connectionId = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "connectionId"));
-			const char* peerAddress = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "peerAddress"));
+			if (cJSON_GetObjectItemCaseSensitive(item, "connectionId") ||
+				cJSON_GetObjectItemCaseSensitive(item, "peerAddress") ||
+				cJSON_GetObjectItemCaseSensitive(item, "connectionFreshness")) return false;
 			const char* characteristicUuid = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "characteristicUuid"));
 			const cJSON* statusCode = cJSON_GetObjectItemCaseSensitive(item, "statusCode");
 			const char* statusKind = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "statusKind"));
 			const cJSON* observedAt = cJSON_GetObjectItemCaseSensitive(item, "observedAtUptimeMs");
-			const char* freshness = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "connectionFreshness"));
-			if (!connectionId || !peerAddress || !characteristicUuid || !cJSON_IsNumber(statusCode) ||
-				!statusKind || (std::strcmp(statusKind, "NotificationTx") != 0 &&
-				 std::strcmp(statusKind, "IndicationAcknowledged") != 0 && std::strcmp(statusKind, "Error") != 0) ||
-				!cJSON_IsNumber(observedAt) || observedAt->valuedouble < 0 || !freshness || std::strcmp(freshness, "current") != 0) return false;
-			if (!statusKeys.insert(std::string(connectionId) + "/" + characteristicUuid).second) return false;
+			const cJSON* notificationTxCount = cJSON_GetObjectItemCaseSensitive(item, "notificationTxCount");
+			const cJSON* indicationAcknowledgedCount = cJSON_GetObjectItemCaseSensitive(item, "indicationAcknowledgedCount");
+			const cJSON* errorCount = cJSON_GetObjectItemCaseSensitive(item, "errorCount");
+			if (!isStatusUuid(characteristicUuid) || !cJSON_IsNumber(statusCode) || !statusKind ||
+				!cJSON_IsNumber(observedAt) || observedAt->valuedouble < 0 ||
+				!cJSON_IsNumber(notificationTxCount) || notificationTxCount->valuedouble < 0 ||
+				!cJSON_IsNumber(indicationAcknowledgedCount) || indicationAcknowledgedCount->valuedouble < 0 ||
+				!cJSON_IsNumber(errorCount) || errorCount->valuedouble < 0) return false;
+			const bool statusMatches = statusCode->valuedouble == 0 ?
+				std::strcmp(statusKind, "NotificationTx") == 0 :
+				statusCode->valuedouble == 123 ?
+					std::strcmp(statusKind, "IndicationAcknowledged") == 0 :
+					std::strcmp(statusKind, "Error") == 0;
+			if (!statusMatches || !statusKeys.insert(characteristicUuid).second) return false;
 		}
 		return true;
 	}
@@ -361,7 +379,7 @@ namespace
 		const cJSON* currentConnections = cJSON_GetObjectItemCaseSensitive(diagnostics, "currentConnectionCount");
 		const cJSON* subscriptions = cJSON_GetObjectItemCaseSensitive(diagnostics, "lastObservedSubscriptions");
 		const cJSON* statuses = cJSON_GetObjectItemCaseSensitive(diagnostics, "lastPublicationStatuses");
-		if (currentConnections->valuedouble != 2 || cJSON_GetArraySize(subscriptions) != 4 || cJSON_GetArraySize(statuses) != 3) return false;
+		if (currentConnections->valuedouble != 2 || cJSON_GetArraySize(subscriptions) != 8 || cJSON_GetArraySize(statuses) != 3) return false;
 		bool sawOff = false, sawNotify = false, sawIndicate = false, sawBoth = false;
 		for (const cJSON* item = subscriptions->child; item; item = item->next)
 		{
@@ -376,9 +394,17 @@ namespace
 		{
 			const cJSON* statusCode = cJSON_GetObjectItemCaseSensitive(item, "statusCode");
 			const char* kind = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "statusKind"));
-			if (statusCode->valuedouble == 0 && std::strcmp(kind, "NotificationTx") == 0) sawNotificationStatus = true;
-			if (statusCode->valuedouble == 123 && std::strcmp(kind, "IndicationAcknowledged") == 0) sawIndicationAck = true;
-			if (statusCode->valuedouble == -99 && std::strcmp(kind, "Error") == 0) sawError = true;
+			const cJSON* notificationTxCount = cJSON_GetObjectItemCaseSensitive(item, "notificationTxCount");
+			const cJSON* indicationAcknowledgedCount = cJSON_GetObjectItemCaseSensitive(item, "indicationAcknowledgedCount");
+			const cJSON* errorCount = cJSON_GetObjectItemCaseSensitive(item, "errorCount");
+			if (statusCode->valuedouble == 0 && std::strcmp(kind, "NotificationTx") == 0 &&
+				notificationTxCount->valuedouble == 5 && indicationAcknowledgedCount->valuedouble == 1 && errorCount->valuedouble == 2)
+				sawNotificationStatus = true;
+			if (statusCode->valuedouble == 123 && std::strcmp(kind, "IndicationAcknowledged") == 0 &&
+				indicationAcknowledgedCount->valuedouble == 4)
+				sawIndicationAck = true;
+			if (statusCode->valuedouble == -99 && std::strcmp(kind, "Error") == 0 && errorCount->valuedouble == 3)
+				sawError = true;
 		}
 		return sawOff && sawNotify && sawIndicate && sawBoth && sawNotificationStatus && sawIndicationAck && sawError;
 	}
@@ -391,9 +417,18 @@ namespace
 		const cJSON* currentConnections = cJSON_GetObjectItemCaseSensitive(diagnostics, "currentConnectionCount");
 		const cJSON* subscriptions = cJSON_GetObjectItemCaseSensitive(diagnostics, "lastObservedSubscriptions");
 		const cJSON* statuses = cJSON_GetObjectItemCaseSensitive(diagnostics, "lastPublicationStatuses");
+		const cJSON* values = cJSON_GetObjectItemCaseSensitive(root, "values");
+		bool valuesShowNoSubscribedPeers = cJSON_IsArray(values) && cJSON_GetArraySize(values) == 4;
+		for (const cJSON* item = valuesShowNoSubscribedPeers ? values->child : nullptr; item; item = item->next)
+		{
+			const cJSON* connected = cJSON_GetObjectItemCaseSensitive(item, "connectedPeerCount");
+			const cJSON* observed = cJSON_GetObjectItemCaseSensitive(item, "observedSubscribedPeerCount");
+			valuesShowNoSubscribedPeers = valuesShowNoSubscribedPeers && cJSON_IsNumber(connected) &&
+				connected->valuedouble == 2 && cJSON_IsNumber(observed) && observed->valuedouble == 0;
+		}
 		const bool matches = verifySubscriptionDiagnosticsShape(diagnostics) &&
 			cJSON_IsNumber(currentConnections) && currentConnections->valuedouble == 2 &&
-			cJSON_GetArraySize(subscriptions) == 0 && cJSON_GetArraySize(statuses) == 0;
+			cJSON_GetArraySize(subscriptions) == 0 && cJSON_GetArraySize(statuses) == 0 && valuesShowNoSubscribedPeers;
 		cJSON_Delete(root);
 		return matches;
 	}
@@ -409,8 +444,7 @@ namespace
 		const cJSON* servicesAvailable = cJSON_GetObjectItemCaseSensitive(root, "servicesAvailable");
 		const cJSON* services = cJSON_GetObjectItemCaseSensitive(root, "services");
 		const cJSON* diagnostics = cJSON_GetObjectItemCaseSensitive(root, "subscriptionDiagnostics");
-		bool matches = WebStatusTest::hasExactObjectKeys(root, {"values", "state", "serviceLimit", "valuesAvailable",
-			"servicesAvailable", "services", "subscriptionDiagnostics"}) && cJSON_IsArray(values) && cJSON_GetArraySize(values) == 4 &&
+		bool matches = cJSON_IsArray(values) && cJSON_GetArraySize(values) == 4 &&
 			cJSON_IsString(state) && std::strcmp(state->valuestring, "Ready") == 0 &&
 			cJSON_IsNumber(serviceLimit) && serviceLimit->valuedouble == 4 &&
 			cJSON_IsTrue(valuesAvailable) && cJSON_IsTrue(servicesAvailable) &&
@@ -425,8 +459,11 @@ namespace
 			"12345678-1234-5678-1234-56789abcdef2", "12345678-1234-5678-1234-56789abcdef3",
 			"12345678-1234-5678-1234-56789abcdf05", "12345678-1234-5678-1234-56789abcdef5"}};
 		constexpr std::array<const char*, 4> hexValues{{"0102", "0304", "EB00", "010203"}};
+		constexpr std::array<bool, 4> read{{true, true, true, true}};
+		constexpr std::array<bool, 4> write{{true, true, false, false}};
 		constexpr std::array<bool, 4> notify{{true, false, true, true}};
 		constexpr std::array<bool, 4> indicate{{false, true, false, true}};
+		constexpr std::array<size_t, 4> observedSubscribed{{1, 1, 1, 2}};
 		for (int i = 0; matches && i < 4; ++i)
 		{
 			const cJSON* item = cJSON_GetArrayItem(values, i);
@@ -434,26 +471,29 @@ namespace
 			const cJSON* name = cJSON_GetObjectItemCaseSensitive(item, "name");
 			const cJSON* serviceUuid = cJSON_GetObjectItemCaseSensitive(item, "serviceUuid");
 			const cJSON* characteristicUuid = cJSON_GetObjectItemCaseSensitive(item, "characteristicUuid");
+			const cJSON* readValue = cJSON_GetObjectItemCaseSensitive(item, "read");
+			const cJSON* writeValue = cJSON_GetObjectItemCaseSensitive(item, "write");
 			const cJSON* notifyValue = cJSON_GetObjectItemCaseSensitive(item, "notify");
 			const cJSON* indicateValue = cJSON_GetObjectItemCaseSensitive(item, "indicate");
 			const cJSON* maxLength = cJSON_GetObjectItemCaseSensitive(item, "maxLength");
 			const cJSON* publicationLimit = cJSON_GetObjectItemCaseSensitive(item, "publicationLimit");
 			const cJSON* minimumPeerMtu = cJSON_GetObjectItemCaseSensitive(item, "minimumPeerMtu");
 			const cJSON* connectedPeerCount = cJSON_GetObjectItemCaseSensitive(item, "connectedPeerCount");
+			const cJSON* observedSubscribedPeerCount = cJSON_GetObjectItemCaseSensitive(item, "observedSubscribedPeerCount");
 			const cJSON* currentHex = cJSON_GetObjectItemCaseSensitive(item, "currentHex");
-			size_t fieldCount = 0;
-			for (const cJSON* field = item ? item->child : nullptr; field; field = field->next) ++fieldCount;
-			matches = item && fieldCount == 11 && cJSON_IsString(targetId) &&
+			matches = item && cJSON_IsString(targetId) &&
 				std::strcmp(targetId->valuestring, gattTargetIds[i]) == 0 && cJSON_IsString(name) &&
 				std::strcmp(name->valuestring, names[i]) == 0 && cJSON_IsString(serviceUuid) &&
 				std::strcmp(serviceUuid->valuestring, serviceUuids[i]) == 0 && cJSON_IsString(characteristicUuid) &&
 				std::strcmp(characteristicUuid->valuestring, characteristicUuids[i]) == 0 &&
-				cJSON_IsBool(notifyValue) && cJSON_IsBool(indicateValue) &&
+				cJSON_IsBool(readValue) && cJSON_IsBool(writeValue) && cJSON_IsBool(notifyValue) && cJSON_IsBool(indicateValue) &&
+				cJSON_IsTrue(readValue) == read[i] && cJSON_IsTrue(writeValue) == write[i] &&
 				cJSON_IsTrue(notifyValue) == notify[i] && cJSON_IsTrue(indicateValue) == indicate[i] &&
 				cJSON_IsNumber(maxLength) && maxLength->valuedouble == 512 &&
 				cJSON_IsNumber(publicationLimit) && publicationLimit->valuedouble == 20 &&
 				cJSON_IsNumber(minimumPeerMtu) && minimumPeerMtu->valuedouble == 23 &&
 				cJSON_IsNumber(connectedPeerCount) && connectedPeerCount->valuedouble == 2 &&
+				cJSON_IsNumber(observedSubscribedPeerCount) && observedSubscribedPeerCount->valuedouble == observedSubscribed[i] &&
 				cJSON_IsString(currentHex) && std::strcmp(currentHex->valuestring, hexValues[i]) == 0;
 		}
 		const cJSON* protectedService = cJSON_GetArrayItem(services, 0);
@@ -620,6 +660,23 @@ BluetoothManager::GattSubscriptionDiagnosticsSnapshot BluetoothManager::GetGattS
 	return WebStatusTest::gattDiagnostics;
 }
 
+size_t BluetoothManager::CountObservedSubscribedPeers(const GattSubscriptionDiagnosticsSnapshot& snapshot,
+	std::string_view characteristicUuid, uint16_t properties)
+{
+	const bool notifySupported = (properties & NIMBLE_PROPERTY::NOTIFY) != 0;
+	const bool indicateSupported = (properties & NIMBLE_PROPERTY::INDICATE) != 0;
+	std::set<std::pair<uint64_t, uint32_t>> peers;
+	for (const auto& observation : snapshot.observations)
+	{
+		if (!observation.subscriptionObserved || observation.characteristicUuid != characteristicUuid) continue;
+		const bool notifyEnabled = (observation.cccdValue & 0x0001U) != 0 && notifySupported;
+		const bool indicateEnabled = (observation.cccdValue & 0x0002U) != 0 && indicateSupported;
+		if (notifyEnabled || indicateEnabled)
+			peers.emplace(observation.connectionId.boot, observation.connectionId.sequence);
+	}
+	return peers.size();
+}
+
 DynamicGatt::Inventory DynamicGatt::GetInventory() { return WebStatusTest::gattInventory; }
 bool DynamicGatt::Ready() { return WebStatusTest::dynamicGattReady; }
 
@@ -634,13 +691,13 @@ FixtureGatt::WebResult FixtureGatt::GetValues()
 	}
 	return {Outcome::Ready, "Current stored values observed.", {
 		{{0x123456789ABCDEF0ULL, 1}, "Original notification", "12345678-1234-5678-1234-56789abcdef0",
-			"12345678-1234-5678-1234-56789abcdef2", NIMBLE_PROPERTY::NOTIFY, 512, 20, 23, 2, {0x01, 0x02}},
+			"12345678-1234-5678-1234-56789abcdef2", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY, 512, 20, 23, 2, {0x01, 0x02}},
 		{{0x123456789ABCDEF0ULL, 2}, "Original indication", "12345678-1234-5678-1234-56789abcdef0",
-			"12345678-1234-5678-1234-56789abcdef3", NIMBLE_PROPERTY::INDICATE, 512, 20, 23, 2, {0x03, 0x04}},
+			"12345678-1234-5678-1234-56789abcdef3", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::INDICATE, 512, 20, 23, 2, {0x03, 0x04}},
 		{{0x123456789ABCDEF0ULL, 3}, "Temperature Scalar", "12345678-1234-5678-1234-56789abcdf00",
-			"12345678-1234-5678-1234-56789abcdf05", NIMBLE_PROPERTY::NOTIFY, 512, 20, 23, 2, {0xEB, 0x00}},
+			"12345678-1234-5678-1234-56789abcdf05", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY, 512, 20, 23, 2, {0xEB, 0x00}},
 		{{0x123456789ABCDEF0ULL, 4}, "Dual notification and indication", "12345678-1234-5678-1234-56789abcdef0",
-			"12345678-1234-5678-1234-56789abcdef5", NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE,
+			"12345678-1234-5678-1234-56789abcdef5", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE,
 			512, 20, 23, 2, {0x01, 0x02, 0x03}}
 	}};
 }
@@ -781,16 +838,24 @@ int main()
 		{{{0, 0}, "12345678-1234-5678-1234-56789abcdef0", "12345678-1234-5678-1234-56789abcdef2", true},
 		 {{0x123456789ABCDEF0ULL, 4}, "12345678-1234-5678-1234-56789abce100", "12345678-1234-5678-1234-56789abce101", false}},
 		""};
-	WebStatusTest::gattDiagnostics = BluetoothManager::GattSubscriptionDiagnosticsSnapshot{2, {
-		{{0x123456789ABCDEF0ULL, 1}, "11:22:33:44:55:66", "12345678-1234-5678-1234-56789abcdef2", true, 0, 1001, true, 0,
-			BluetoothManager::GattPublicationStatusKind::NotificationTx, 1101},
-		{{0x123456789ABCDEF0ULL, 1}, "11:22:33:44:55:66", "12345678-1234-5678-1234-56789abcdef3", true, 1, 1002, true, -99,
-			BluetoothManager::GattPublicationStatusKind::Error, 1102},
-		{{0x123456789ABCDEF0ULL, 1}, "11:22:33:44:55:66", "12345678-1234-5678-1234-56789abcdef5", true, 2, 1003, true, 123,
-			BluetoothManager::GattPublicationStatusKind::IndicationAcknowledged, 1103},
-		{{0x123456789ABCDEF0ULL, 2}, "22:33:44:55:66:77", "12345678-1234-5678-1234-56789abcdef5", true, 3, 2003, false, 0,
-			BluetoothManager::GattPublicationStatusKind::Error, 0}
-	}};
+	BluetoothManager::GattSubscriptionDiagnosticsSnapshot currentDiagnostics;
+	currentDiagnostics.currentConnectionCount = 2;
+	currentDiagnostics.observations = {
+		{{0x123456789ABCDEF0ULL, 1}, "11:22:33:44:55:66", "12345678-1234-5678-1234-56789abcdef2", true, 0, 1001},
+		{{0x123456789ABCDEF0ULL, 1}, "11:22:33:44:55:66", "12345678-1234-5678-1234-56789abcdef3", true, 1, 1002},
+		{{0x123456789ABCDEF0ULL, 1}, "11:22:33:44:55:66", "12345678-1234-5678-1234-56789abcdf05", true, 2, 1003},
+		{{0x123456789ABCDEF0ULL, 1}, "11:22:33:44:55:66", "12345678-1234-5678-1234-56789abcdef5", true, 3, 1004},
+		{{0x123456789ABCDEF0ULL, 2}, "22:33:44:55:66:77", "12345678-1234-5678-1234-56789abcdef2", true, 1, 2001},
+		{{0x123456789ABCDEF0ULL, 2}, "22:33:44:55:66:77", "12345678-1234-5678-1234-56789abcdef3", true, 2, 2002},
+		{{0x123456789ABCDEF0ULL, 2}, "22:33:44:55:66:77", "12345678-1234-5678-1234-56789abcdf05", true, 1, 2003},
+		{{0x123456789ABCDEF0ULL, 2}, "22:33:44:55:66:77", "12345678-1234-5678-1234-56789abcdef5", true, 2, 2004}
+	};
+	currentDiagnostics.publicationStatuses = {
+		{"12345678-1234-5678-1234-56789abcdef2", 0, BluetoothManager::GattPublicationStatusKind::NotificationTx, 1101, 5, 1, 2},
+		{"12345678-1234-5678-1234-56789abcdef3", 123, BluetoothManager::GattPublicationStatusKind::IndicationAcknowledged, 1102, 0, 4, 0},
+		{"12345678-1234-5678-1234-56789abcdef5", -99, BluetoothManager::GattPublicationStatusKind::Error, 1103, 0, 0, 3}
+	};
+	WebStatusTest::gattDiagnostics = currentDiagnostics;
 	WebStatusTest::armAllocationFailure(0);
 	const bool gattSnapshotSent = WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
 		WebStatusTest::response.sentJson;
@@ -798,30 +863,31 @@ int main()
 	WebStatusTest::disarmAllocationFailure();
 	if (!require(gattSnapshotSent && verifyGattSnapshot(WebStatusTest::response.json),
 		"extracted getGatt serializes all four targets and the required current diagnostics schema")) return 1;
-	const auto currentDiagnostics = WebStatusTest::gattDiagnostics;
-	WebStatusTest::gattDiagnostics = BluetoothManager::GattSubscriptionDiagnosticsSnapshot{2, {}};
+	const auto savedDiagnostics = WebStatusTest::gattDiagnostics;
+	WebStatusTest::gattDiagnostics = BluetoothManager::GattSubscriptionDiagnosticsSnapshot{2, {}, {}};
 	const bool noObservedResponse = WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
 		WebStatusTest::response.sentJson && verifyNoObservedDiagnostics(WebStatusTest::response.json);
 	if (!require(noObservedResponse, "two current peers with no callbacks serialize empty arrays without inventing Off")) return 1;
 	BluetoothManager::GattSubscriptionDiagnosticsSnapshot maximumDiagnostics;
-	maximumDiagnostics.currentConnectionCount = BluetoothManager::MaxGattObservationEntries / 3;
-	constexpr std::array<const char*, 3> diagnosticUuids{{
+	maximumDiagnostics.currentConnectionCount = BluetoothManager::MaxGattObservationEntries / 4;
+	constexpr std::array<const char*, 4> diagnosticUuids{{
 		"12345678-1234-5678-1234-56789abcdef2", "12345678-1234-5678-1234-56789abcdef3",
-		"12345678-1234-5678-1234-56789abcdef5"}};
+		"12345678-1234-5678-1234-56789abcdf05", "12345678-1234-5678-1234-56789abcdef5"}};
 	constexpr std::array<const char*, 4> diagnosticAddresses{{
 		"11:22:33:44:55:01", "11:22:33:44:55:02", "11:22:33:44:55:03", "11:22:33:44:55:04"}};
 	for (size_t peerIndex = 0; peerIndex < maximumDiagnostics.currentConnectionCount; ++peerIndex)
 		for (size_t characteristicIndex = 0; characteristicIndex < diagnosticUuids.size(); ++characteristicIndex)
 		{
-			const auto kind = characteristicIndex == 0 ? BluetoothManager::GattPublicationStatusKind::NotificationTx :
-				characteristicIndex == 1 ? BluetoothManager::GattPublicationStatusKind::IndicationAcknowledged :
-				BluetoothManager::GattPublicationStatusKind::Error;
 			maximumDiagnostics.observations.push_back({
 				{0x9999000000000000ULL + peerIndex, static_cast<uint32_t>(peerIndex + 1)}, diagnosticAddresses[peerIndex],
 				diagnosticUuids[characteristicIndex], true, static_cast<uint16_t>((peerIndex + characteristicIndex) % 4),
-				static_cast<uint32_t>(3000 + peerIndex * 3 + characteristicIndex), true,
-				static_cast<int>(characteristicIndex), kind, static_cast<uint32_t>(4000 + peerIndex * 3 + characteristicIndex)});
+				static_cast<uint32_t>(3000 + peerIndex * 4 + characteristicIndex)});
 		}
+	maximumDiagnostics.publicationStatuses = {
+		{"12345678-1234-5678-1234-56789abcdef2", 0, BluetoothManager::GattPublicationStatusKind::NotificationTx, 4000, 1, 0, 0},
+		{"12345678-1234-5678-1234-56789abcdef3", 123, BluetoothManager::GattPublicationStatusKind::IndicationAcknowledged, 4001, 0, 1, 0},
+		{"12345678-1234-5678-1234-56789abcdef5", -1, BluetoothManager::GattPublicationStatusKind::Error, 4002, 0, 0, 1}
+	};
 	WebStatusTest::gattDiagnostics = maximumDiagnostics;
 	const bool maximumDiagnosticsSent = WebStatusTest::getGatt(&request) == ESP_OK && WebStatusTest::response.status == 200 &&
 		WebStatusTest::response.sentJson;
@@ -832,7 +898,7 @@ int main()
 	const bool diagnosticsRemainBounded = maximumDiagnosticsSent && maximumDiagnosticsRoot &&
 		verifySubscriptionDiagnosticsShape(maximumDiagnosticsObject) &&
 		cJSON_GetArraySize(maximumSubscriptions) == BluetoothManager::MaxGattObservationEntries &&
-		cJSON_GetArraySize(maximumStatuses) == BluetoothManager::MaxGattObservationEntries &&
+		cJSON_GetArraySize(maximumStatuses) == BluetoothManager::MaxGattPublicationStatusEntries &&
 		WebStatusTest::response.json.size() < 8192;
 	if (!diagnosticsRemainBounded)
 		std::fprintf(stderr, "diagnosticsBound: sent=%d root=%d shape=%d subscriptions=%d statuses=%d bytes=%zu\n",
@@ -841,8 +907,8 @@ int main()
 			cJSON_GetArraySize(maximumStatuses), WebStatusTest::response.json.size());
 	cJSON_Delete(maximumDiagnosticsRoot);
 	if (!require(diagnosticsRemainBounded,
-		"maximum diagnostics serialize no more than one current record per peer/characteristic")) return 1;
-	WebStatusTest::gattDiagnostics = currentDiagnostics;
+		"maximum diagnostics serialize one current record per peer/target and one status per allowlisted characteristic")) return 1;
+	WebStatusTest::gattDiagnostics = savedDiagnostics;
 	for (size_t ordinal = 1; ordinal <= gattAllocationCount; ++ordinal)
 	{
 		WebStatusTest::armAllocationFailure(ordinal);

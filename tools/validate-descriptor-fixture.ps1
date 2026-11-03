@@ -7,6 +7,8 @@ $projectRoot = (Resolve-Path (Split-Path $PSScriptRoot -Parent)).Path
 $pioExe = Join-Path $env:USERPROFILE '.platformio\penv\Scripts\pio.exe'
 $pythonCommand = Get-Command -Name python -CommandType Application -ErrorAction Stop | Select-Object -First 1
 $pythonExe = $pythonCommand.Source
+$nodeCommand = Get-Command -Name node -CommandType Application -ErrorAction Stop | Select-Object -First 1
+$nodeExe = $nodeCommand.Source
 $evidenceRoot = Join-Path $projectRoot '.pio\descriptor-fixture'
 if ($null -eq $Environments -or @($Environments).Count -eq 0 -or $null -eq $Modes -or @($Modes).Count -eq 0) {
 	throw 'At least one board environment and firmware mode must be selected.'
@@ -62,7 +64,7 @@ function Get-SourceHashes {
 		'tools/generate-web-assets.py', 'tools/firmware_revision.py',
 		'tools/pio_firmware_identity.py', 'tools/pio_firmware_identity_post.py',
 		'tools/validate-descriptor-fixture.ps1', 'test/verify-advertising-stop-completion.ps1',
-        'test/verify-descriptor-fixture.py', 'test/web_ui_regression.cjs'
+        'test/verify-descriptor-fixture.py', 'test/web_ui_regression.cjs', 'test/README'
 	)) {
 		$path = Join-Path $projectRoot $relative.Replace('/', '\')
 		if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required source input is missing: $relative" }
@@ -109,6 +111,134 @@ function Invoke-NativeRegression([string]$Name, [string]$RelativeScript) {
 		log = ".pio/descriptor-fixture/$runId/$logName"
 	})
 	if ($exitCode -ne 0) { throw "Native regression $Name failed; see $logPath." }
+}
+
+function Invoke-NodeRegression([string]$Name, [string]$RelativeScript) {
+	$scriptPath = Join-Path $projectRoot $RelativeScript.Replace('/', '\')
+	if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "Node regression script is missing: $RelativeScript" }
+	$logName = "native-$Name.log"
+	$logPath = Join-Path $runRoot $logName
+	& $nodeExe $scriptPath *> $logPath
+	$exitCode = $LASTEXITCODE
+	$result = if ($exitCode -eq 0) { 'Passed' } else { 'Failed' }
+	$nativeChecks.Add([ordered]@{
+		name = $Name; result = $result; exitCode = $exitCode
+		log = ".pio/descriptor-fixture/$runId/$logName"
+	})
+	if ($exitCode -ne 0) { throw "Node regression $Name failed; see $logPath." }
+}
+
+function Remove-InheritedInterfaceMode([string]$Flags) {
+	if ([string]::IsNullOrWhiteSpace($Flags)) { return '' }
+	$definitionPattern = '(?i)(?<!\S)(?:"-D\s*BLE_INTERFACE_MODE(?:\s*=\s*[^"]*)?"|''-D\s*BLE_INTERFACE_MODE(?:\s*=\s*[^'']*)?''|-D\s*(?:"BLE_INTERFACE_MODE(?:\s*=\s*[^"]*)?"|''BLE_INTERFACE_MODE(?:\s*=\s*[^'']*)?''|BLE_INTERFACE_MODE(?:\s*=\s*[^\s]+)?))'
+	$withoutMode = [regex]::Replace($Flags, $definitionPattern, ' ')
+	if ($withoutMode -match '(?i)\bBLE_INTERFACE_MODE\b') {
+		throw 'Inherited PLATFORMIO_BUILD_FLAGS contains an unsupported BLE_INTERFACE_MODE token; refusing to risk a conflicting effective definition.'
+	}
+	return $withoutMode.Trim()
+}
+
+function Get-SconsVariableBlocks([string[]]$Lines, [string]$Variable) {
+	$keyPattern = '^\s*\{?\s*[''"]?' + [regex]::Escape($Variable) + '[''"]?\s*(?::|=)\s*(?<value>.*)$'
+	$nextKeyPattern = '^\s*\{?\s*[''\"]?[A-Za-z_][A-Za-z0-9_]*[''\"]?\s*(?::|=)\s*'
+	$blocks = [System.Collections.Generic.List[string]]::new()
+	for ($i = 0; $i -lt $Lines.Count; $i++) {
+		$match = [regex]::Match($Lines[$i], $keyPattern)
+		if (-not $match.Success) { continue }
+		$indent = $Lines[$i].Length - $Lines[$i].TrimStart().Length
+		$block = [System.Collections.Generic.List[string]]::new()
+		$block.Add($match.Groups['value'].Value)
+		for ($j = $i + 1; $j -lt $Lines.Count; $j++) {
+			$nextIndent = $Lines[$j].Length - $Lines[$j].TrimStart().Length
+			if ($nextIndent -le $indent -and $Lines[$j] -match $nextKeyPattern) { break }
+			$block.Add($Lines[$j])
+		}
+		$blocks.Add(($block -join "`n"))
+	}
+	return @($blocks)
+}
+
+function Get-SconsModeTokens([string[]]$Blocks, [string]$Variable, [string]$Label) {
+	$values = [System.Collections.Generic.List[string]]::new()
+	foreach ($block in $Blocks) {
+		$matches = [regex]::Matches($block, '(?i)(?<![A-Z0-9_])(?:-D\s*)?BLE_INTERFACE_MODE\s*=\s*["'']?([0-9]+)["'']?(?![A-Z0-9_])')
+		foreach ($match in $matches) { $values.Add($match.Groups[1].Value) }
+		$tupleMatches = [regex]::Matches($block, '(?i)[''"]BLE_INTERFACE_MODE[''"]\s*(?:,|:)\s*[''"]?([0-9]+)[''"]?')
+		foreach ($match in $tupleMatches) { $values.Add($match.Groups[1].Value) }
+		$mentionCount = [regex]::Matches($block, '(?i)(?<![A-Z0-9_])["'']?(?:-D\s*|/D\s*)?["'']?BLE_INTERFACE_MODE["'']?(?![A-Z0-9_])').Count
+		if ($mentionCount -ne ($matches.Count + $tupleMatches.Count)) {
+			throw "$Label SCons $Variable contains an unrecognized BLE_INTERFACE_MODE representation."
+		}
+	}
+	return @($values)
+}
+
+function Get-SconsModeEvidence([string[]]$Lines, [int]$Mode, [string]$Label) {
+	$cppDefines = @(Get-SconsVariableBlocks -Lines $Lines -Variable 'CPPDEFINES')
+	if (-not $cppDefines.Count) { throw "$Label SCons envdump did not expose CPPDEFINES." }
+	$cppModeValues = @(Get-SconsModeTokens -Blocks $cppDefines -Variable 'CPPDEFINES' -Label $Label)
+	if (-not $cppModeValues.Count -or @($cppModeValues | Where-Object { $_ -ne [string]$Mode }).Count) {
+		throw "$Label effective SCons CPPDEFINES contain a missing or conflicting BLE_INTERFACE_MODE value."
+	}
+	$ccFlags = @(Get-SconsVariableBlocks -Lines $Lines -Variable 'CCFLAGS')
+	$ccModeValues = @(Get-SconsModeTokens -Blocks $ccFlags -Variable 'CCFLAGS' -Label $Label)
+	if (@($ccModeValues | Where-Object { $_ -ne [string]$Mode }).Count) {
+		throw "$Label SCons CCFLAGS contains a conflicting BLE_INTERFACE_MODE override."
+	}
+	return [ordered]@{
+		evidenceSource = 'pinned PlatformIO/SCons CPPDEFINES and CCFLAGS envdump'
+		sourceCompileCommandCount = 0
+		cppDefinesListCount = $cppDefines.Count
+		verifiedCppDefinesModeDefinitionCount = $cppModeValues.Count
+		cppDefinesModeValues = @($cppModeValues | Sort-Object -Unique)
+		ccFlagsModeDefinitionCount = $ccModeValues.Count
+		ccFlagsModeValues = @($ccModeValues | Sort-Object -Unique)
+		effectiveModeDefine = "-DBLE_INTERFACE_MODE=$Mode"
+	}
+}
+
+function Get-CompilerModeEvidence([string[]]$Lines, [int]$Mode, [string]$Label, [string]$Board) {
+	$compilerLines = @($Lines | Where-Object {
+		$_ -match '(?i)(?:g\+\+|gcc)(?:\.exe)?' -and $_ -match '(^|\s)-c(\s|$)'
+	})
+	$sourceLines = @($compilerLines | Where-Object { $_ -match '(?i)(?:^|[\\/\s])src[\\/]' })
+	if ($sourceLines.Count) {
+		$modeDefinitionCounts = [System.Collections.Generic.List[int]]::new()
+		$observedModeValues = [System.Collections.Generic.List[string]]::new()
+		foreach ($line in $sourceLines) {
+			$definitions = [regex]::Matches($line, '(?i)(?<![A-Z0-9_])["'']?(?:-D\s*|/D\s*)["'']?BLE_INTERFACE_MODE["'']?\s*=\s*["'']?([0-9]+)["'']?["'']?(?![A-Z0-9_])')
+			$modeMentions = [regex]::Matches($line, '(?i)(?<![A-Z0-9_])["'']?(?:-D\s*|/D\s*)?["'']?BLE_INTERFACE_MODE["'']?(?![A-Z0-9_])').Count
+			if (-not $definitions.Count -or $modeMentions -ne $definitions.Count -or
+				@($definitions | Where-Object { $_.Groups[1].Value -ne [string]$Mode }).Count) {
+				throw "$Label source compiler arguments omit the requested BLE_INTERFACE_MODE or contain a conflicting/unrecognized definition."
+			}
+			$modeDefinitionCounts.Add($definitions.Count)
+			foreach ($definition in $definitions) { $observedModeValues.Add($definition.Groups[1].Value) }
+		}
+		return [ordered]@{
+			evidenceSource = 'source compiler commands'
+			sourceCompileCommandCount = $sourceLines.Count
+			minimumModeDefinitionCountPerCommand = ($modeDefinitionCounts | Measure-Object -Minimum).Minimum
+			maximumModeDefinitionCountPerCommand = ($modeDefinitionCounts | Measure-Object -Maximum).Maximum
+			modeValues = @($observedModeValues | Sort-Object -Unique)
+			effectiveModeDefine = "-DBLE_INTERFACE_MODE=$Mode"
+		}
+	}
+
+	$sconsLines = @(& $pioExe run --project-dir $projectRoot -e $Board --target envdump 2>&1 | ForEach-Object { [string]$_ })
+	if ($LASTEXITCODE -ne 0) { throw "$Label could not query the effective PlatformIO/SCons environment for incremental-build mode evidence." }
+	return Get-SconsModeEvidence -Lines $sconsLines -Mode $Mode -Label $Label
+}
+
+function Write-SafeBuildLog([string]$Path, [string[]]$Lines) {
+	$safeLines = foreach ($line in $Lines) {
+		if ($line -match '(?i)(?:g\+\+|gcc)(?:\.exe)?' -and $line -match '(^|\s)-c(\s|$)') {
+			'[compiler invocation redacted; effective mode verified in build manifest]'
+			continue
+		}
+		$line -replace '(?i)(?<!\S)-D\s*(?!BLE_INTERFACE_MODE\b)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"(?:\\.|[^"])*"|\S+)', '-D$1=<redacted>'
+	}
+	[IO.File]::WriteAllText($Path, ($safeLines -join [Environment]::NewLine) + [Environment]::NewLine, $utf8NoBom)
 }
 
 $sourceUnchanged = $false
@@ -158,15 +288,21 @@ try {
 	Invoke-NativeRegression -Name 'fixture' -RelativeScript 'test/descriptor_fixture_native/run.py'
 	Invoke-NativeRegression -Name 'startup' -RelativeScript 'test/descriptor_startup_native/run.py'
 	Invoke-NativeRegression -Name 'web-status' -RelativeScript 'test/web_status_native/run.py'
+	Invoke-NativeRegression -Name 'dynamic-gatt' -RelativeScript 'test/dynamic_gatt_native/run.py'
+	Invoke-NativeRegression -Name 'dynamic-topology' -RelativeScript 'test/dynamic_topology_native/run.py'
+	Invoke-NativeRegression -Name 'fixture-source' -RelativeScript 'test/verify-descriptor-fixture.py'
+	Invoke-NodeRegression -Name 'web-ui' -RelativeScript 'test/web_ui_regression.cjs'
 	[IO.File]::WriteAllText($manifest, '', $utf8NoBom)
 	foreach ($board in $Environments) {
 		foreach ($mode in $Modes) {
 			$label = "${board}_mode${mode}"
 			$log = Join-Path $runRoot "$label.log"
 			$binary = Join-Path $runRoot "$label.bin"
-			$env:PLATFORMIO_BUILD_FLAGS = if ([string]::IsNullOrWhiteSpace($oldFlags)) { "-DBLE_INTERFACE_MODE=$mode" } else { "$oldFlags -DBLE_INTERFACE_MODE=$mode" }
-			& $pioExe run --project-dir $projectRoot -e $board *> $log
+			$preservedFlags = Remove-InheritedInterfaceMode -Flags $oldFlags
+			$env:PLATFORMIO_BUILD_FLAGS = if ([string]::IsNullOrWhiteSpace($preservedFlags)) { "-DBLE_INTERFACE_MODE=$mode" } else { "$preservedFlags -DBLE_INTERFACE_MODE=$mode" }
+			$buildOutput = @(& $pioExe run --project-dir $projectRoot -e $board --verbose 2>&1 | ForEach-Object { [string]$_ })
 			$buildExitCode = $LASTEXITCODE
+			Write-SafeBuildLog -Path $log -Lines $buildOutput
 			if ($buildExitCode -ne 0) {
 				Add-JsonLine $manifest ([ordered]@{
 					runId = $runId; label = $label; environment = $board; mode = $mode; result = 'Failed'
@@ -176,6 +312,7 @@ try {
 				})
 				throw "Build $label failed; see $log (do not publish credential-bearing diagnostics)."
 			}
+			$compilerModeEvidence = Get-CompilerModeEvidence -Lines $buildOutput -Mode $mode -Label $label -Board $board
 			$buildRoot = Join-Path $projectRoot ".pio\build\$board"
 			$buildBinary = Join-Path $buildRoot 'firmware.bin'
 			$buildIdentityStampPath = Join-Path $buildRoot 'firmware.bin.identity.json'
@@ -206,7 +343,8 @@ try {
 			$record = [ordered]@{
 				runId = $runId; label = $label; environment = $board; mode = $mode; result = 'Passed'
 				effectiveModeDefine = "-DBLE_INTERFACE_MODE=$mode"
-				command = "pio run --project-dir . -e $board (PLATFORMIO_BUILD_FLAGS appends -DBLE_INTERFACE_MODE=$mode)"
+				effectiveCompilerArguments = $compilerModeEvidence
+				command = "pio run --project-dir . -e $board --verbose (mode verified from source compiler commands or pinned SCons envdump)"
 				sourceSnapshot = $sourceSnapshotRelative; sourceSnapshotSha256 = $sourceSnapshotHash
 				runSummary = $runSummaryRelative
 				binary = ".pio/descriptor-fixture/$runId/$label.bin"; bytes = $binarySize

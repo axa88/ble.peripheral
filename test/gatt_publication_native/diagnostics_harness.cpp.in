@@ -1,0 +1,289 @@
+#define BLE_ENABLE_WEB_INTERFACE 1
+#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 6
+#define BLE_HS_EDONE 14
+#define BLE_HS_CONN_HANDLE_NONE 0xFFFF
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include "connectionId.h"
+
+namespace NIMBLE_PROPERTY {
+inline constexpr uint16_t READ = 0x0002;
+inline constexpr uint16_t NOTIFY = 0x0010;
+inline constexpr uint16_t INDICATE = 0x0020;
+}
+
+class NimBLEAddress {
+public:
+    NimBLEAddress() = default;
+    explicit NimBLEAddress(std::string value) : value_(std::move(value)) {}
+    std::string toString() const { return value_; }
+    friend bool operator==(const NimBLEAddress& left, const NimBLEAddress& right) { return left.value_ == right.value_; }
+    friend bool operator!=(const NimBLEAddress& left, const NimBLEAddress& right) { return !(left == right); }
+private:
+    std::string value_;
+};
+
+class NimBLEConnInfo {
+public:
+    NimBLEConnInfo() = default;
+    NimBLEConnInfo(uint16_t handle, NimBLEAddress address) : handle_(handle), address_(std::move(address)) {}
+    uint16_t getConnHandle() const { return handle_; }
+    const NimBLEAddress& getAddress() const { return address_; }
+private:
+    uint16_t handle_ = BLE_HS_CONN_HANDLE_NONE;
+    NimBLEAddress address_;
+};
+
+class NimBLEServer {
+public:
+    std::map<uint16_t, NimBLEConnInfo> peers;
+    NimBLEConnInfo getPeerInfoByHandle(uint16_t handle) const {
+        const auto found = peers.find(handle);
+        return found == peers.end() ? NimBLEConnInfo{} : found->second;
+    }
+};
+
+class NimBLECharacteristic {};
+class NimBLECharacteristicCallbacks {
+public:
+    virtual ~NimBLECharacteristicCallbacks() = default;
+    virtual void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t) {}
+    virtual void onStatus(NimBLECharacteristic*, int) {}
+    virtual void onStatus(NimBLECharacteristic*, NimBLEConnInfo&, int) {}
+};
+
+class BluetoothManager {
+public:
+    static constexpr size_t MaxGattObservationEntries = CONFIG_BT_NIMBLE_MAX_CONNECTIONS * 4;
+    static constexpr size_t MaxGattPublicationStatusEntries = 3;
+    enum class GattPublicationStatusKind { NotificationTx, IndicationAcknowledged, Error };
+    struct GattSubscriptionObservation {
+        ConnectionId connectionId{};
+        std::string peerAddress;
+        std::string characteristicUuid;
+        bool subscriptionObserved = false;
+        uint16_t cccdValue = 0;
+        uint32_t subscriptionObservedAtUptimeMs = 0;
+    };
+    struct GattPublicationStatusObservation {
+        std::string characteristicUuid;
+        int statusCode = 0;
+        GattPublicationStatusKind statusKind = GattPublicationStatusKind::Error;
+        uint32_t observedAtUptimeMs = 0;
+        uint32_t notificationTxCount = 0;
+        uint32_t indicationAcknowledgedCount = 0;
+        uint32_t errorCount = 0;
+    };
+    struct GattSubscriptionDiagnosticsSnapshot {
+        size_t currentConnectionCount = 0;
+        std::vector<GattSubscriptionObservation> observations;
+        std::vector<GattPublicationStatusObservation> publicationStatuses;
+    };
+    struct LiveConnection { ConnectionId id{}; uint16_t handle = BLE_HS_CONN_HANDLE_NONE; NimBLEAddress peer; };
+    struct GattObservationSlot {
+        ConnectionId connectionId{};
+        std::array<char, 37> characteristicUuid{};
+        bool used = false;
+        bool subscriptionObserved = false;
+        uint16_t cccdValue = 0;
+        uint32_t subscriptionObservedAtUptimeMs = 0;
+    };
+    struct GattPublicationStatusSlot {
+        bool observed = false;
+        int statusCode = 0;
+        uint32_t observedAtUptimeMs = 0;
+        uint32_t notificationTxCount = 0;
+        uint32_t indicationAcknowledgedCount = 0;
+        uint32_t errorCount = 0;
+    };
+
+    static BluetoothManager& Instance() { static BluetoothManager manager; return manager; }
+    void RecordGattSubscription(const NimBLEConnInfo&, std::string_view, uint16_t);
+    void RecordGattPublicationStatus(std::string_view, int);
+    GattSubscriptionDiagnosticsSnapshot GetGattSubscriptionDiagnosticsSnapshot();
+    static size_t CountObservedSubscribedPeers(const GattSubscriptionDiagnosticsSnapshot&, std::string_view, uint16_t);
+    void Disconnected(const NimBLEConnInfo&);
+    std::optional<NimBLEConnInfo> ResolveConnection(ConnectionId);
+    bool IsCurrentConnectionLocked(ConnectionId, uint16_t, const NimBLEAddress&);
+    GattObservationSlot* FindGattObservationSlotLocked(ConnectionId, std::string_view);
+    GattPublicationStatusSlot* FindGattPublicationStatusSlotLocked(std::string_view);
+
+    std::recursive_mutex connectionMutex_;
+    std::array<LiveConnection, CONFIG_BT_NIMBLE_MAX_CONNECTIONS> connections_{};
+    std::array<GattObservationSlot, MaxGattObservationEntries> gattObservations_{};
+    std::array<GattPublicationStatusSlot, MaxGattPublicationStatusEntries> gattPublicationStatuses_{};
+    NimBLEServer* server_ = nullptr;
+    uint64_t bootId_ = 0;
+};
+
+namespace PairingCoordinator { inline void invalidate(ConnectionId) {} }
+static uint32_t uptimeMs = 100;
+static uint32_t millis() { return ++uptimeMs; }
+
+namespace {
+@@STATUS_UUID_ARRAY@@
+@@SUBSCRIPTION_PREDICATE@@
+@@PUBLICATION_PREDICATE@@
+@@STATUS_KIND@@
+}
+
+@@MANAGER_METHODS@@
+
+namespace FixtureGatt {
+@@SUBSCRIPTION_CALLBACK_CLASS@@
+@@PUBLICATION_CALLBACK_CLASS@@
+}
+
+static unsigned checks = 0;
+static unsigned failures = 0;
+static void check(bool condition, const char* label) {
+    ++checks;
+    std::printf("%s %s\n", condition ? "PASS" : "FAIL", label);
+    if (!condition) ++failures;
+}
+static constexpr char Ef2[] = "12345678-1234-5678-1234-56789abcdef2";
+static constexpr char Ef3[] = "12345678-1234-5678-1234-56789abcdef3";
+static constexpr char Df05[] = "12345678-1234-5678-1234-56789abcdf05";
+static constexpr char Ef5[] = "12345678-1234-5678-1234-56789abcdef5";
+static constexpr std::array<const char*, 4> Targets{{Ef2, Ef3, Df05, Ef5}};
+
+static void connectPeer(BluetoothManager& manager, NimBLEServer& server, size_t slot, uint16_t handle,
+                        uint32_t sequence, const char* address) {
+    const NimBLEAddress peer(address);
+    manager.connections_[slot] = {{manager.bootId_, sequence}, handle, peer};
+    server.peers[handle] = NimBLEConnInfo(handle, peer);
+}
+static const BluetoothManager::GattPublicationStatusObservation* statusFor(
+    const BluetoothManager::GattSubscriptionDiagnosticsSnapshot& snapshot, std::string_view uuid) {
+    const auto found = std::find_if(snapshot.publicationStatuses.begin(), snapshot.publicationStatuses.end(),
+        [&](const auto& status) { return status.characteristicUuid == uuid; });
+    return found == snapshot.publicationStatuses.end() ? nullptr : &*found;
+}
+
+int main() {
+    auto& manager = BluetoothManager::Instance();
+    NimBLEServer server;
+    manager.connections_ = {};
+    manager.gattObservations_ = {};
+    manager.gattPublicationStatuses_ = {};
+    manager.server_ = &server;
+    manager.bootId_ = 77;
+
+    connectPeer(manager, server, 0, 100, 1, "peer-1");
+    auto snapshot = manager.GetGattSubscriptionDiagnosticsSnapshot();
+    check(snapshot.currentConnectionCount == 1 && snapshot.observations.empty() &&
+          BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef2, NIMBLE_PROPERTY::NOTIFY) == 0,
+          "no observation leaves a connected peer uncounted without claiming Off");
+
+    NimBLEConnInfo peer1 = server.getPeerInfoByHandle(100);
+    NimBLECharacteristic characteristic;
+    FixtureGatt::PublicationCallback ef2Callback(Ef2);
+    FixtureGatt::PublicationCallback ef3Callback(Ef3);
+    FixtureGatt::PublicationCallback ef5Callback(Ef5);
+    FixtureGatt::SubscriptionCallback df05Callback(Df05);
+    NimBLECharacteristicCallbacks& ef2Base = ef2Callback;
+    NimBLECharacteristicCallbacks& ef3Base = ef3Callback;
+    NimBLECharacteristicCallbacks& ef5Base = ef5Callback;
+    NimBLECharacteristicCallbacks& df05Base = df05Callback;
+    ef2Base.onSubscribe(&characteristic, peer1, 0);
+    ef3Base.onSubscribe(&characteristic, peer1, 2);
+    df05Base.onSubscribe(&characteristic, peer1, 1);
+    ef5Base.onSubscribe(&characteristic, peer1, 3);
+
+    constexpr std::array<std::array<uint16_t, 4>, 5> laterPeerCccds{{
+        {{1, 0, 0, 1}}, {{2, 1, 3, 2}}, {{3, 3, 2, 3}}, {{1, 2, 0, 0}}, {{0, 0, 1, 3}}
+    }};
+    for (size_t peerIndex = 1; peerIndex < 6; ++peerIndex) {
+        const uint16_t handle = static_cast<uint16_t>(100 + peerIndex);
+        const uint32_t sequence = static_cast<uint32_t>(peerIndex + 1);
+        const std::string address = "peer-" + std::to_string(peerIndex + 1);
+        connectPeer(manager, server, peerIndex, handle, sequence, address.c_str());
+        const auto info = server.getPeerInfoByHandle(handle);
+        for (size_t target = 0; target < Targets.size(); ++target)
+            manager.RecordGattSubscription(info, Targets[target], laterPeerCccds[peerIndex - 1][target]);
+    }
+    snapshot = manager.GetGattSubscriptionDiagnosticsSnapshot();
+    check(BluetoothManager::MaxGattObservationEntries == CONFIG_BT_NIMBLE_MAX_CONNECTIONS * 4 &&
+          snapshot.observations.size() == BluetoothManager::MaxGattObservationEntries,
+          "subscription storage holds all four target observations for every configured peer");
+    check(snapshot.currentConnectionCount == 6,
+          "currentConnectionCount includes peers regardless of their observed CCCD state");
+    check(BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef2, NIMBLE_PROPERTY::NOTIFY) == 3 &&
+          BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef3, NIMBLE_PROPERTY::INDICATE) == 3 &&
+          BluetoothManager::CountObservedSubscribedPeers(snapshot, Df05, NIMBLE_PROPERTY::NOTIFY) == 3 &&
+          BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef5, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::INDICATE) == 5,
+          "all four targets count only CCCD bits supported by their characteristic properties");
+    check(snapshot.observations.front().subscriptionObserved && snapshot.observations.front().cccdValue == 0 &&
+          BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef2, NIMBLE_PROPERTY::NOTIFY) != 0,
+          "explicit Off is recorded while active Notify peers remain countable");
+    auto duplicate = snapshot;
+    const auto firstEf2 = std::find_if(duplicate.observations.begin(), duplicate.observations.end(),
+        [](const auto& item) { return item.connectionId.sequence == 2 && item.characteristicUuid == Ef2; });
+    duplicate.observations.push_back(*firstEf2);
+    check(BluetoothManager::CountObservedSubscribedPeers(duplicate, Ef2, NIMBLE_PROPERTY::NOTIFY) == 3,
+          "duplicate current peer records count once for a target");
+    check(BluetoothManager::CountObservedSubscribedPeers(snapshot, "unknown", NIMBLE_PROPERTY::NOTIFY) == 0 &&
+          BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef5, NIMBLE_PROPERTY::READ) == 0,
+          "unknown targets and properties without Notify or Indicate are not counted");
+
+    ef2Base.onStatus(&characteristic, 0);
+    ef2Base.onStatus(&characteristic, peer1, 0);
+    ef2Base.onStatus(&characteristic, BLE_HS_EDONE);
+    ef2Base.onStatus(&characteristic, peer1, BLE_HS_EDONE);
+    ef2Base.onStatus(&characteristic, 91);
+    ef2Base.onStatus(&characteristic, peer1, 91);
+    ef3Base.onStatus(&characteristic, BLE_HS_EDONE);
+    ef5Base.onStatus(&characteristic, 0);
+    manager.RecordGattPublicationStatus(Df05, 0);
+    manager.RecordGattPublicationStatus("unknown", 91);
+    snapshot = manager.GetGattSubscriptionDiagnosticsSnapshot();
+    const auto* ef2Status = statusFor(snapshot, Ef2);
+    const auto* ef3Status = statusFor(snapshot, Ef3);
+    const auto* ef5Status = statusFor(snapshot, Ef5);
+    check(snapshot.publicationStatuses.size() == BluetoothManager::MaxGattPublicationStatusEntries &&
+          ef2Status && ef3Status && ef5Status && !statusFor(snapshot, Df05),
+          "publication status remains bounded to ef2, ef3, and ef5, excluding df05");
+    check(ef2Status && ef2Status->statusCode == 91 && ef2Status->statusKind == BluetoothManager::GattPublicationStatusKind::Error &&
+          ef2Status->notificationTxCount == 1 && ef2Status->indicationAcknowledgedCount == 1 && ef2Status->errorCount == 1,
+          "both pinned callback overloads represent one event and classification counts accumulate once");
+
+    const NimBLEConnInfo disconnectedPeer = server.getPeerInfoByHandle(101);
+    server.peers.erase(101);
+    manager.Disconnected(disconnectedPeer);
+    snapshot = manager.GetGattSubscriptionDiagnosticsSnapshot();
+    check(snapshot.currentConnectionCount == 5 && snapshot.observations.size() == 20 &&
+          BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef2, NIMBLE_PROPERTY::NOTIFY) == 2,
+          "disconnect removes all four peer observations and cannot leave a stale target count");
+    ef2Status = statusFor(snapshot, Ef2);
+    check(ef2Status && ef2Status->notificationTxCount == 1 && ef2Status->indicationAcknowledgedCount == 1 &&
+          ef2Status->errorCount == 1,
+          "characteristic publication counts survive peer disconnect");
+
+    connectPeer(manager, server, 1, 101, 7, "peer-7-reused-handle");
+    NimBLEConnInfo reusedHandle = server.getPeerInfoByHandle(101);
+    ef2Base.onSubscribe(&characteristic, reusedHandle, 0);
+    ef3Base.onSubscribe(&characteristic, reusedHandle, 0);
+    df05Base.onSubscribe(&characteristic, reusedHandle, 0);
+    ef5Base.onSubscribe(&characteristic, reusedHandle, 0);
+    snapshot = manager.GetGattSubscriptionDiagnosticsSnapshot();
+    check(snapshot.currentConnectionCount == 6 && snapshot.observations.size() == BluetoothManager::MaxGattObservationEntries &&
+          std::none_of(snapshot.observations.begin(), snapshot.observations.end(),
+              [](const auto& item) { return item.connectionId.sequence == 2 || item.peerAddress == "peer-2"; }) &&
+          std::count_if(snapshot.observations.begin(), snapshot.observations.end(),
+              [](const auto& item) { return item.connectionId.sequence == 7 && item.peerAddress == "peer-7-reused-handle"; }) == 4,
+          "reused native handle gets fresh observations after disconnect cleanup frees bounded slots");
+    check(BluetoothManager::CountObservedSubscribedPeers(snapshot, Ef2, NIMBLE_PROPERTY::NOTIFY) == 2,
+          "reused handle with explicit Off does not inherit its previous peer count");
+
+    std::printf("PASS %u/%u production manager and fixture callback diagnostics checks\n", checks - failures, checks);
+    return failures ? 1 : 0;
+}

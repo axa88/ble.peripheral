@@ -137,25 +137,33 @@ namespace FixtureGatt
 			}
 		};
 
-		class PublicationCallback : public NimBLECharacteristicCallbacks
+		class SubscriptionCallback : public NimBLECharacteristicCallbacks
 		{
 		public:
-			explicit PublicationCallback(const char* uuid) : uuid_(uuid) {}
+			explicit SubscriptionCallback(const char* uuid) : uuid_(uuid) {}
 
 #if BLE_ENABLE_WEB_INTERFACE
 			void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo& connInfo, uint16_t subValue) override
 			{
 				BluetoothManager::Instance().RecordGattSubscription(connInfo, uuid_, subValue);
 			}
-
-			void onStatus(NimBLECharacteristic*, NimBLEConnInfo& connInfo, int status) override
-			{
-				BluetoothManager::Instance().RecordGattPublicationStatus(connInfo, uuid_, status);
-			}
 #endif
 
-		private:
+		protected:
 			const char* uuid_;
+		};
+
+		class PublicationCallback : public SubscriptionCallback
+		{
+		public:
+			using SubscriptionCallback::SubscriptionCallback;
+
+#if BLE_ENABLE_WEB_INTERFACE
+			void onStatus(NimBLECharacteristic*, int status) override
+			{
+				BluetoothManager::Instance().RecordGattPublicationStatus(uuid_, status);
+			}
+#endif
 		};
 
 #if BLE_ENABLE_WEB_INTERFACE
@@ -371,6 +379,9 @@ namespace FixtureGatt
 		static FixtureUpdateCallback notifyCallback(UpdateKind::Notify, NotificationCharacteristicUuid);
 		static FixtureUpdateCallback indicateCallback(UpdateKind::Indicate, IndicationCharacteristicUuid);
 		static PublicationCallback dualUpdateCallback(DualUpdateCharacteristicUuid);
+#if BLE_ENABLE_WEB_INTERFACE
+		static SubscriptionCallback temperatureSubscriptionCallback(TemperatureUuid);
+#endif
 
 		auto* service = server.createService(ServiceUuid);
 		if (!service) return nullptr;
@@ -411,6 +422,9 @@ namespace FixtureGatt
 			fixtures[i] = descriptorService->createCharacteristic(uuid, properties, maxLength);
 			if (!fixtures[i]) return nullptr;
 			auto* characteristic = fixtures[i];
+#if BLE_ENABLE_WEB_INTERFACE
+			if (i == 4) characteristic->setCallbacks(&temperatureSubscriptionCallback);
+#endif
 			if (i < 5) characteristic->setValue(scalarValue, sizeof(scalarValue));
 			else if (i == 5) characteristic->setValue(aggregateValue, sizeof(aggregateValue));
 			else if (i == 8) characteristic->setValue(unsignedValue, sizeof(unsignedValue));

@@ -23,6 +23,8 @@ struct ConnectionId
 
 namespace NIMBLE_PROPERTY
 {
+	inline constexpr uint16_t READ = 0x0002;
+	inline constexpr uint16_t WRITE = 0x0008;
 	inline constexpr uint16_t NOTIFY = 0x0010;
 	inline constexpr uint16_t INDICATE = 0x0020;
 }
@@ -88,6 +90,7 @@ class BluetoothManager
 {
 public:
 	static constexpr size_t MaxGattObservationEntries = 12;
+	static constexpr size_t MaxGattPublicationStatusEntries = 3;
 	enum class GattPublicationStatusKind { NotificationTx, IndicationAcknowledged, Error };
 	struct ConnectedPeerSnapshot {};
 	struct GattSubscriptionObservation
@@ -98,18 +101,27 @@ public:
 		bool subscriptionObserved = false;
 		uint16_t cccdValue = 0;
 		uint32_t subscriptionObservedAtUptimeMs = 0;
-		bool publicationStatusObserved = false;
-		int publicationStatusCode = 0;
-		GattPublicationStatusKind publicationStatusKind = GattPublicationStatusKind::Error;
-		uint32_t publicationStatusObservedAtUptimeMs = 0;
+	};
+	struct GattPublicationStatusObservation
+	{
+		std::string characteristicUuid;
+		int statusCode = 0;
+		GattPublicationStatusKind statusKind = GattPublicationStatusKind::Error;
+		uint32_t observedAtUptimeMs = 0;
+		uint32_t notificationTxCount = 0;
+		uint32_t indicationAcknowledgedCount = 0;
+		uint32_t errorCount = 0;
 	};
 	struct GattSubscriptionDiagnosticsSnapshot
 	{
 		size_t currentConnectionCount = 0;
 		std::vector<GattSubscriptionObservation> observations;
+		std::vector<GattPublicationStatusObservation> publicationStatuses;
 	};
 	static BluetoothManager& Instance();
 	GattSubscriptionDiagnosticsSnapshot GetGattSubscriptionDiagnosticsSnapshot();
+	static size_t CountObservedSubscribedPeers(const GattSubscriptionDiagnosticsSnapshot& snapshot,
+		std::string_view characteristicUuid, uint16_t properties);
 };
 
 inline const char* publicationStatusKindName(BluetoothManager::GattPublicationStatusKind kind)

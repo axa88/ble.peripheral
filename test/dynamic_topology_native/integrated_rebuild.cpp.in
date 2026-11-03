@@ -1,0 +1,152 @@
+#define BLE_INTERFACE_MODE 0
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include "Arduino.h"
+#include "NimBLEDevice.h"
+#include "dynamicGatt.h"
+#include "fixtureGatt.h"
+#include "gattRebuild.h"
+
+uint32_t esp_random() { static uint32_t value = 10; return ++value; }
+
+class BluetoothManager {
+public:
+    static BluetoothManager& Instance() { static BluetoothManager manager; return manager; }
+    NimBLEServer* Server() const { return server_; }
+    void SetServer(NimBLEServer* server) { server_ = server; }
+private:
+    NimBLEServer* server_ = nullptr;
+};
+
+namespace Advertising {
+struct RebuildSnapshot {};
+struct StopAllResult { unsigned failed = 0; };
+inline bool IsDirectedActive() { return false; }
+inline bool CaptureForRebuild(RebuildSnapshot&) { return true; }
+inline StopAllResult StopAll() { return {}; }
+inline bool RestoreAfterRebuild(const RebuildSnapshot&) { return true; }
+inline void DrainDeferredCallbacks() {}
+}
+
+static int checks = 0;
+static int failures = 0;
+static bool check(bool ok, const char* label) {
+    ++checks;
+    std::cout << (ok ? "PASS " : "FAIL ") << label << "\n";
+    if (!ok) ++failures;
+    return ok;
+}
+
+namespace DynamicGatt {
+namespace {
+std::mutex entryMutex;
+std::atomic<State> state{State::Ready};
+struct Managed {
+    ConnectionId id{};
+    std::string serviceUuid, characteristicUuid;
+    NimBLEService* service = nullptr;
+    NimBLECharacteristic* characteristic = nullptr;
+};
+std::array<Managed, ServiceLimit> managed{};
+uint64_t boot = 0;
+uint32_t sequence = 0;
+constexpr std::array<uint16_t, 6> descriptorUuids{{0x2900, 0x2901, 0x2904, 0x2905, 0x2906, 0}};
+@@SERVER@@
+@@PROTECTED_SERVICES@@
+@@NATIVE_IDLE@@
+@@READ_EQUALS@@
+@@NATIVE_CHARACTERISTIC@@
+@@IDENTITY_STRUCTS@@
+@@UNAVAILABLE@@
+@@PROTECTED_UUID@@
+@@VALIDATE_ADD@@
+template<class Function> auto onHost(Function function) -> decltype(function()) { return function(); }
+@@NATIVE_OPERATION@@
+@@APPLY@@
+}
+@@ENTRY_METHODS@@
+@@READY@@
+@@CANONICAL_UUID@@
+@@ADD_SERVICE@@
+@@REMOVE_SERVICE@@
+
+bool integratedScenario() {
+    auto* fixtureService = BluetoothManager::Instance().Server()->getServiceByUUID(FixtureGatt::DescriptorServiceUuid);
+    auto* writable = fixtureService ? fixtureService->getCharacteristic(FixtureGatt::WritableDescriptionUuid) : nullptr;
+    auto* description = writable ? writable->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2901})) : nullptr;
+    const bool found = check(description != nullptr, "production fixture exposes writable df08 0x2901");
+    if (!found) return false;
+
+    const auto originalHandle = description->getHandle();
+    const std::vector<uint8_t> modified{0x43, 0x61, 0x66, 0xC3, 0xA9};
+    check(NimBLETest::attWrite(originalHandle, modified, 64) == NimBLETest::AttResult::Success,
+          "df08 accepts an ATT write before production dynamic rebuild");
+    std::vector<uint8_t> readback;
+    check(NimBLETest::attRead(originalHandle, readback) == NimBLETest::AttResult::Success && readback == modified,
+          "modified df08 bytes are visible through the native ATT adapter before rebuild");
+
+    FixtureIdentity beforeAdd;
+    check(beforeAdd.capture(), "production FixtureIdentity captures mutable df08 before add");
+    check(BluetoothManager::Instance().Server()->getConnectedCount() == 0,
+          "integrated production rebuild starts with no connected peers");
+    GattValue::Buffer bytes{};
+    bytes[0] = 0xA5;
+    bytes[1] = 0x5A;
+    const auto added = AddService("aaaaaaaa-1111-2222-3333-444444444440",
+        "aaaaaaaa-1111-2222-3333-444444444441", bytes, 2);
+    check(added.outcome == Outcome::Applied && Ready() && managed[0].service != nullptr,
+          "production DynamicGatt::AddService completes reset, registration, finalization, and verification");
+    check(beforeAdd.verify(), "after add, production FixtureIdentity verifies service, descriptor, handle, permissions, and current bytes");
+
+    auto verifyDescription = [&](const char* phase) {
+        auto* currentService = BluetoothManager::Instance().Server()->getServiceByUUID(FixtureGatt::DescriptorServiceUuid);
+        auto* currentCharacteristic = currentService ? currentService->getCharacteristic(FixtureGatt::WritableDescriptionUuid) : nullptr;
+        auto* currentDescription = currentCharacteristic ? currentCharacteristic->getDescriptorByUUID(NimBLEUUID(uint16_t{0x2901})) : nullptr;
+        if (!currentDescription) return check(false, phase);
+        const auto currentValue = currentDescription->getValue();
+        const std::vector<uint8_t> local(currentValue.begin(), currentValue.end());
+        std::vector<uint8_t> native;
+        const bool valid = currentDescription == description && currentCharacteristic == writable &&
+            currentDescription->getHandle() == originalHandle && currentDescription->getProperties() == (BLE_ATT_F_READ | BLE_ATT_F_WRITE) &&
+            currentValue.max_size() == 128 && local == modified &&
+            NimBLETest::attRead(originalHandle, native) == NimBLETest::AttResult::Success && native == modified;
+        return check(valid, phase);
+    };
+    verifyDescription("after add, real fixture finalization preserves df08 identity, handle, permissions, capacity, and native ATT bytes");
+
+    FixtureIdentity beforeRemove;
+    check(beforeRemove.capture(), "production FixtureIdentity captures the post-add df08 state before remove");
+    const ConnectionId id = managed[0].id;
+    const auto removed = RemoveService(id);
+    check(removed.outcome == Outcome::Applied && Ready() && managed[0].service == nullptr,
+          "production DynamicGatt::RemoveService completes reset, registration, finalization, and verification");
+    check(beforeRemove.verify(), "after remove, production FixtureIdentity verifies the captured fixture topology");
+    verifyDescription("after remove, real fixture finalization preserves df08 identity, handle, permissions, capacity, and native ATT bytes");
+    return failures == 0;
+}
+}
+
+int main() {
+    NimBLETest::reset();
+    NimBLEServer server;
+    BluetoothManager::Instance().SetServer(&server);
+    check(!FixtureGatt::Ready(), "production fixture starts not ready");
+    const bool created = FixtureGatt::Create(server) != nullptr;
+    check(created, "production FixtureGatt::Create builds the fixture schema");
+    const bool registered = created && server.start();
+    check(registered, "shared NimBLE adapter registers production fixture attributes");
+    const bool finalized = registered && FixtureGatt::Finalize();
+    check(finalized && FixtureGatt::Ready(), "production FixtureGatt::Finalize validates initial fixture state");
+    const bool integrated = finalized && DynamicGatt::Ready() && DynamicGatt::integratedScenario();
+    std::cout << checks - failures << "/" << checks << " integrated production rebuild checks passed\n";
+    return integrated && failures == 0 ? 0 : 1;
+}

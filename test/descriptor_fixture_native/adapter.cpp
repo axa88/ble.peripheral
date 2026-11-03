@@ -150,10 +150,30 @@ namespace NimBLETest
 	}
 }
 
+int ble_gatts_find_svc(const NimBLEUUID* service, uint16_t* handle)
+{
+	if (!service) return -1;
+	if (*service == NimBLEUUID(uint16_t{0x1800})) { if (handle) *handle = 0xFFF0; return 0; }
+	if (*service == NimBLEUUID(uint16_t{0x1801})) { if (handle) *handle = 0xFFF1; return 0; }
+	for (const auto& item : NimBLETest::controls().nativeServices)
+		if (item.service && item.service->getUUID() == *service) { if (handle) *handle = item.handle; return 0; }
+	return BLE_HS_ENOENT;
+}
+
 int ble_gatts_find_chr(const NimBLEUUID* service, const NimBLEUUID* characteristic,
 	uint16_t* declarationHandle, uint16_t* valueHandle)
 {
 	if (!service || !characteristic) return -1;
+	const NimBLEUUID gap(uint16_t{0x1800}), gatt(uint16_t{0x1801});
+	const NimBLEUUID deviceName(uint16_t{0x2A00}), appearance(uint16_t{0x2A01});
+	const NimBLEUUID serviceChanged(uint16_t{0x2A05}), serverFeatures(uint16_t{0x2B3A}), clientFeatures(uint16_t{0x2B29});
+	uint16_t fixedDeclaration = 0, fixedValue = 0;
+	if (*service == gap && *characteristic == deviceName) { fixedDeclaration = 0xFFF2; fixedValue = 0xFFF3; }
+	else if (*service == gap && *characteristic == appearance) { fixedDeclaration = 0xFFF4; fixedValue = 0xFFF5; }
+	else if (*service == gatt && *characteristic == serviceChanged) { fixedDeclaration = 0xFFF6; fixedValue = 0xFFF7; }
+	else if (*service == gatt && *characteristic == serverFeatures) { fixedDeclaration = 0xFFF8; fixedValue = 0xFFF9; }
+	else if (*service == gatt && *characteristic == clientFeatures) { fixedDeclaration = 0xFFFA; fixedValue = 0xFFFB; }
+	if (fixedValue) { if (declarationHandle) *declarationHandle = fixedDeclaration; if (valueHandle) *valueHandle = fixedValue; return 0; }
 	for (const auto& item : NimBLETest::controls().nativeDeclarations)
 	{
 		if (!item.characteristic || !item.characteristic->getService() ||
@@ -169,6 +189,8 @@ int ble_gatts_find_dsc(const NimBLEUUID* service, const NimBLEUUID* characterist
 	const NimBLEUUID* descriptor, uint16_t* handle)
 {
 	if (!service || !characteristic || !descriptor) return -1;
+	if (*service == NimBLEUUID(uint16_t{0x1801}) && *characteristic == NimBLEUUID(uint16_t{0x2A05}) &&
+		*descriptor == NimBLEUUID(uint16_t{0x2902})) { if (handle) *handle = 0xFFFC; return 0; }
 	for (const auto& item : NimBLETest::controls().nativeAttributes)
 	{
 		auto* value = item.attribute;
@@ -280,6 +302,7 @@ NimBLECharacteristic* NimBLEService::createCharacteristic(const NimBLEUUID& uuid
 	std::unique_ptr<NimBLECharacteristic> characteristic(new NimBLECharacteristic(uuid, properties, maxLength, this));
 	auto* result = characteristic.get();
 	characteristics_.push_back(std::move(characteristic));
+	addCharacteristicViewForTest(result);
 	return result;
 }
 
@@ -295,6 +318,7 @@ NimBLEService* NimBLEServer::createService(const char* uuid)
 	if (!NimBLETest::allowFactory(NimBLETest::FactoryKind::Service)) return nullptr;
 	std::unique_ptr<NimBLEService> service(new NimBLEService(NimBLEUUID(uuid)));
 	auto* result = service.get();
+	result->setServerForTest(this);
 	services_.push_back(std::move(service));
 	return result;
 }
@@ -302,8 +326,20 @@ NimBLEService* NimBLEServer::createService(const char* uuid)
 NimBLEService* NimBLEServer::getServiceByUUID(const NimBLEUUID& uuid) const
 {
 	for (const auto& service : services_)
-		if (service->getUUID() == uuid) return service.get();
+		if (!service->getRemoved() && service->getUUID() == uuid) return service.get();
 	return nullptr;
+}
+
+NimBLEService* NimBLEServer::getServiceByHandle(uint16_t handle) const
+{
+	for (const auto& service : services_)
+		if (!service->getRemoved() && service->getHandle() == handle) return service.get();
+	return nullptr;
+}
+
+void NimBLEServer::removeService(NimBLEService* service, bool)
+{
+	if (service && service->getServer() == this) service->setRemovedForTest(true);
 }
 
 bool NimBLEServer::start()
@@ -314,11 +350,14 @@ bool NimBLEServer::start()
 	if (!state.registrationSucceeds) return false;
 	state.nativeAttributes.clear();
 	state.nativeDeclarations.clear();
+	state.nativeServices.clear();
 	state.managedCccds.clear();
 	uint16_t nextHandle = 1;
 	for (const auto& service : services_)
 	{
+		if (service->getRemoved()) continue;
 		service->handle_ = nextHandle++;
+		state.nativeServices.push_back({service.get(), service->handle_});
 		service->managedCccdCount_ = 0;
 		for (const auto& characteristic : service->characteristics_)
 		{
@@ -345,3 +384,18 @@ bool NimBLEServer::start()
 	NimBLETest::afterRegistration(*this);
 	return true;
 }
+
+int ble_gatts_reset()
+{
+	auto& state = NimBLETest::controls();
+	state.registrationComplete = false;
+	state.nativeAttributes.clear();
+	state.nativeDeclarations.clear();
+	state.nativeServices.clear();
+	state.managedCccds.clear();
+	return 0;
+}
+void ble_gatts_stop() {}
+int ble_gap_adv_active() { return 0; }
+int ble_gap_disc_active() { return 0; }
+int ble_gap_conn_active() { return 0; }

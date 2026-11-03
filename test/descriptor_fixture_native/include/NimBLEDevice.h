@@ -29,6 +29,7 @@
 #define BLE_GATT_CHR_PROP_EXTENDED 0x80
 #define BLE_ATT_F_READ 0x01
 #define BLE_ATT_F_WRITE 0x02
+#define BLE_HS_ENOENT 2
 
 namespace NIMBLE_PROPERTY
 {
@@ -42,6 +43,7 @@ inline constexpr uint16_t AUTH_SIGN_WRITE = BLE_GATT_CHR_F_AUTH_SIGN_WRITE;
 }
 
 class NimBLEServer;
+class NimBLEService;
 class NimBLELocalValueAttribute;
 class NimBLECharacteristic;
 
@@ -76,6 +78,12 @@ struct NativeDeclaration
 	uint8_t properties = 0;
 };
 
+struct NativeService
+{
+	NimBLEService* service = nullptr;
+	uint16_t handle = 0;
+};
+
 struct Counters
 {
 	size_t serviceCreates = 0;
@@ -102,6 +110,7 @@ struct Controls
 	std::vector<uint8_t> lastIndication;
 	std::vector<NativeAttribute> nativeAttributes;
 	std::vector<NativeDeclaration> nativeDeclarations;
+	std::vector<NativeService> nativeServices;
 	std::vector<std::pair<NimBLECharacteristic*, uint16_t>> managedCccds;
 };
 
@@ -311,12 +320,20 @@ public:
 	uint16_t getHandle() const { return handle_; }
 	const std::vector<std::unique_ptr<NimBLECharacteristic>>& characteristicsForTest() const { return characteristics_; }
 	size_t managedCccdCountForTest() const { return managedCccdCount_; }
-	const std::vector<std::unique_ptr<NimBLECharacteristic>>& getCharacteristics() const { return characteristics_; }
+	const std::vector<NimBLECharacteristic*>& getCharacteristics() const { return characteristicView_; }
+	NimBLEServer* getServer() const { return server_; }
+	bool getRemoved() const { return removed_; }
+	void setServerForTest(NimBLEServer* server) { server_ = server; }
+	void setRemovedForTest(bool removed) { removed_ = removed; }
+	void addCharacteristicViewForTest(NimBLECharacteristic* characteristic) { characteristicView_.push_back(characteristic); }
 
 private:
 	NimBLEUUID uuid_;
 	uint16_t handle_ = 0;
+	NimBLEServer* server_ = nullptr;
+	bool removed_ = false;
 	std::vector<std::unique_ptr<NimBLECharacteristic>> characteristics_;
+	std::vector<NimBLECharacteristic*> characteristicView_;
 	size_t managedCccdCount_ = 0;
 	friend class NimBLEServer;
 };
@@ -335,11 +352,18 @@ inline int os_mbuf_copydata(const os_mbuf* source, size_t offset, size_t length,
 }
 inline void os_mbuf_free_chain(os_mbuf* value) { delete value; }
 
+int ble_gatts_find_svc(const NimBLEUUID* service, uint16_t* handle);
 int ble_gatts_find_chr(const NimBLEUUID* service, const NimBLEUUID* characteristic,
 	uint16_t* declarationHandle, uint16_t* valueHandle);
 int ble_gatts_find_dsc(const NimBLEUUID* service, const NimBLEUUID* characteristic,
 	const NimBLEUUID* descriptor, uint16_t* handle);
 int ble_att_svr_read_local(uint16_t handle, os_mbuf** data);
+int ble_gatts_reset();
+void ble_gatts_stop();
+int ble_gap_adv_active();
+int ble_gap_disc_active();
+int ble_gap_conn_active();
+uint32_t esp_random();
 
 class NimBLEServer
 {
@@ -347,6 +371,9 @@ public:
 	NimBLEService* createService(const char* uuid);
 	NimBLEService* getServiceByUUID(const char* uuid) const { return getServiceByUUID(NimBLEUUID(uuid)); }
 	NimBLEService* getServiceByUUID(const NimBLEUUID& uuid) const;
+	NimBLEService* getServiceByHandle(uint16_t handle) const;
+	void removeService(NimBLEService* service, bool deleteService);
+	uint8_t getConnectedCount() const { return 0; }
 	void setCallbacks(NimBLEServerCallbacks* callbacks) { callbacks_ = callbacks; }
 	NimBLEServerCallbacks* callbacksForTest() const { return callbacks_; }
 	void advertiseOnDisconnect(bool enabled) { advertiseOnDisconnect_ = enabled; }

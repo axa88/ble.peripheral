@@ -1884,6 +1884,7 @@ esp_err_t getGatt(httpd_req_t* request)
 	if (!servicesAvailable) addReason(inventory.reason, inventory.state == DynamicGatt::State::Ready ?
 		"GATT service inventory is not currently available." : "GATT service inventory is unavailable while the database is not Ready.");
 
+	const auto diagnostics = BluetoothManager::Instance().GetGattSubscriptionDiagnosticsSnapshot();
 	cJSON* json = cJSON_CreateObject();
 	if (!json) { sendJson(request, 500, nullptr); return ESP_OK; }
 	if (valuesAvailable)
@@ -1898,12 +1899,16 @@ esp_err_t getGatt(httpd_req_t* request)
 				!cJSON_AddStringToObject(value, "name", entry.name) ||
 				!cJSON_AddStringToObject(value, "serviceUuid", entry.serviceUuid) ||
 				!cJSON_AddStringToObject(value, "characteristicUuid", entry.characteristicUuid) ||
+				!cJSON_AddBoolToObject(value, "read", (entry.properties & NIMBLE_PROPERTY::READ) != 0) ||
+				!cJSON_AddBoolToObject(value, "write", (entry.properties & NIMBLE_PROPERTY::WRITE) != 0) ||
 				!cJSON_AddBoolToObject(value, "notify", (entry.properties & NIMBLE_PROPERTY::NOTIFY) != 0) ||
 				!cJSON_AddBoolToObject(value, "indicate", (entry.properties & NIMBLE_PROPERTY::INDICATE) != 0) ||
 				!cJSON_AddNumberToObject(value, "maxLength", entry.maxLength) ||
 				!cJSON_AddNumberToObject(value, "publicationLimit", entry.publicationLimit) ||
 				!cJSON_AddNumberToObject(value, "minimumPeerMtu", entry.minimumPeerMtu) ||
 				!cJSON_AddNumberToObject(value, "connectedPeerCount", entry.connectedPeerCount) ||
+				!cJSON_AddNumberToObject(value, "observedSubscribedPeerCount",
+					BluetoothManager::CountObservedSubscribedPeers(diagnostics, entry.characteristicUuid, entry.properties)) ||
 				!cJSON_AddStringToObject(value, "currentHex", hexValue(entry.current).c_str()))
 			{
 				cJSON_Delete(value);
@@ -1978,7 +1983,6 @@ esp_err_t getGatt(httpd_req_t* request)
 		return ESP_OK;
 	}
 
-	const auto diagnostics = BluetoothManager::Instance().GetGattSubscriptionDiagnosticsSnapshot();
 	cJSON* subscriptionDiagnostics = cJSON_CreateObject();
 	cJSON* lastObservedSubscriptions = cJSON_CreateArray();
 	cJSON* lastPublicationStatuses = cJSON_CreateArray();
@@ -2024,35 +2028,35 @@ esp_err_t getGatt(httpd_req_t* request)
 				return ESP_OK;
 			}
 		}
-		if (entry.publicationStatusObserved)
+	}
+	for (const auto& entry : diagnostics.publicationStatuses)
+	{
+		cJSON* item = cJSON_CreateObject();
+		if (!item || !cJSON_AddStringToObject(item, "characteristicUuid", entry.characteristicUuid.c_str()) ||
+			!cJSON_AddNumberToObject(item, "statusCode", entry.statusCode) ||
+			!cJSON_AddStringToObject(item, "statusKind", publicationStatusKindName(entry.statusKind)) ||
+			!cJSON_AddNumberToObject(item, "observedAtUptimeMs", entry.observedAtUptimeMs) ||
+			!cJSON_AddNumberToObject(item, "notificationTxCount", entry.notificationTxCount) ||
+			!cJSON_AddNumberToObject(item, "indicationAcknowledgedCount", entry.indicationAcknowledgedCount) ||
+			!cJSON_AddNumberToObject(item, "errorCount", entry.errorCount))
 		{
-			cJSON* item = cJSON_CreateObject();
-			if (!item || !cJSON_AddStringToObject(item, "connectionId", connectionId.c_str()) ||
-				!cJSON_AddStringToObject(item, "peerAddress", entry.peerAddress.c_str()) ||
-				!cJSON_AddStringToObject(item, "characteristicUuid", entry.characteristicUuid.c_str()) ||
-				!cJSON_AddNumberToObject(item, "statusCode", entry.publicationStatusCode) ||
-				!cJSON_AddStringToObject(item, "statusKind", publicationStatusKindName(entry.publicationStatusKind)) ||
-				!cJSON_AddNumberToObject(item, "observedAtUptimeMs", entry.publicationStatusObservedAtUptimeMs) ||
-				!cJSON_AddStringToObject(item, "connectionFreshness", "current"))
-			{
-				if (item) cJSON_Delete(item);
-				cJSON_Delete(subscriptionDiagnostics);
-				cJSON_Delete(lastObservedSubscriptions);
-				cJSON_Delete(lastPublicationStatuses);
-				cJSON_Delete(json);
-				sendJson(request, 500, nullptr);
-				return ESP_OK;
-			}
-			if (!cJSON_AddItemToArray(lastPublicationStatuses, item))
-			{
-				cJSON_Delete(item);
-				cJSON_Delete(subscriptionDiagnostics);
-				cJSON_Delete(lastObservedSubscriptions);
-				cJSON_Delete(lastPublicationStatuses);
-				cJSON_Delete(json);
-				sendJson(request, 500, nullptr);
-				return ESP_OK;
-			}
+			if (item) cJSON_Delete(item);
+			cJSON_Delete(subscriptionDiagnostics);
+			cJSON_Delete(lastObservedSubscriptions);
+			cJSON_Delete(lastPublicationStatuses);
+			cJSON_Delete(json);
+			sendJson(request, 500, nullptr);
+			return ESP_OK;
+		}
+		if (!cJSON_AddItemToArray(lastPublicationStatuses, item))
+		{
+			cJSON_Delete(item);
+			cJSON_Delete(subscriptionDiagnostics);
+			cJSON_Delete(lastObservedSubscriptions);
+			cJSON_Delete(lastPublicationStatuses);
+			cJSON_Delete(json);
+			sendJson(request, 500, nullptr);
+			return ESP_OK;
 		}
 	}
 	if (!cJSON_AddNumberToObject(subscriptionDiagnostics, "currentConnectionCount", diagnostics.currentConnectionCount) ||
@@ -2060,7 +2064,7 @@ esp_err_t getGatt(httpd_req_t* request)
 		!cJSON_AddStringToObject(subscriptionDiagnostics, "subscriptionSemantics",
 			"Each value is the latest observed onSubscribe callback for a current connection. Absence means no event was observed; it does not mean Off. Disconnect clears observations.") ||
 		!cJSON_AddStringToObject(subscriptionDiagnostics, "publicationStatusSemantics",
-			"Asynchronous connection-scoped NimBLE status only: code 0 is notification TX status, BLE_HS_EDONE is indication acknowledgement, and other nonzero codes are errors. None proves client-application receipt."))
+			"Characteristic-level asynchronous NimBLE status only: code 0 is notification TX, BLE_HS_EDONE is indication acknowledgement, and other nonzero codes are errors/timeouts. Counts are observed callback events; they do not prove peer dispatch or client-application receipt."))
 	{
 		cJSON_Delete(subscriptionDiagnostics);
 		cJSON_Delete(lastObservedSubscriptions);

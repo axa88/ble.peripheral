@@ -29,11 +29,24 @@ namespace
 	constexpr uint8_t supportedEncryptionMask = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_SIGN;
 
 #if BLE_ENABLE_WEB_INTERFACE
-	bool isGattDiagnosticCharacteristic(std::string_view uuid)
+	constexpr std::array<std::string_view, BluetoothManager::MaxGattPublicationStatusEntries> gattPublicationStatusCharacteristics{{
+		"12345678-1234-5678-1234-56789abcdef2",
+		"12345678-1234-5678-1234-56789abcdef3",
+		"12345678-1234-5678-1234-56789abcdef5"
+	}};
+
+	bool isGattSubscriptionCharacteristic(std::string_view uuid)
 	{
 		return uuid == "12345678-1234-5678-1234-56789abcdef2" ||
 			uuid == "12345678-1234-5678-1234-56789abcdef3" ||
+			uuid == "12345678-1234-5678-1234-56789abcdf05" ||
 			uuid == "12345678-1234-5678-1234-56789abcdef5";
+	}
+
+	bool isGattPublicationStatusCharacteristic(std::string_view uuid)
+	{
+		return std::find(gattPublicationStatusCharacteristics.begin(), gattPublicationStatusCharacteristics.end(), uuid) !=
+			gattPublicationStatusCharacteristics.end();
 	}
 
 	BluetoothManager::GattPublicationStatusKind gattPublicationStatusKind(int status)
@@ -221,7 +234,7 @@ std::optional<ConnectionId> BluetoothManager::ConnectionIdentity(uint16_t handle
 BluetoothManager::GattObservationSlot* BluetoothManager::FindGattObservationSlotLocked(ConnectionId connection,
 	std::string_view characteristicUuid)
 {
-	if (!connection || !isGattDiagnosticCharacteristic(characteristicUuid))
+	if (!connection || !isGattSubscriptionCharacteristic(characteristicUuid))
 		return nullptr;
 	for (auto& observation : gattObservations_)
 		if (observation.used && observation.connectionId == connection &&
@@ -239,9 +252,17 @@ BluetoothManager::GattObservationSlot* BluetoothManager::FindGattObservationSlot
 	return nullptr;
 }
 
+BluetoothManager::GattPublicationStatusSlot* BluetoothManager::FindGattPublicationStatusSlotLocked(std::string_view characteristicUuid)
+{
+	const auto it = std::find(gattPublicationStatusCharacteristics.begin(), gattPublicationStatusCharacteristics.end(), characteristicUuid);
+	if (it == gattPublicationStatusCharacteristics.end())
+		return nullptr;
+	return &gattPublicationStatuses_[static_cast<size_t>(it - gattPublicationStatusCharacteristics.begin())];
+}
+
 void BluetoothManager::RecordGattSubscription(const NimBLEConnInfo& info, std::string_view characteristicUuid, uint16_t cccdValue)
 {
-	if (cccdValue > 3 || !isGattDiagnosticCharacteristic(characteristicUuid))
+	if (cccdValue > 3 || !isGattSubscriptionCharacteristic(characteristicUuid))
 		return;
 	std::lock_guard<std::recursive_mutex> lock(connectionMutex_);
 	for (const auto& entry : connections_)
@@ -259,24 +280,27 @@ void BluetoothManager::RecordGattSubscription(const NimBLEConnInfo& info, std::s
 		}
 }
 
-void BluetoothManager::RecordGattPublicationStatus(const NimBLEConnInfo& info, std::string_view characteristicUuid, int status)
+void BluetoothManager::RecordGattPublicationStatus(std::string_view characteristicUuid, int status)
 {
-	if (!isGattDiagnosticCharacteristic(characteristicUuid))
+	if (!isGattPublicationStatusCharacteristic(characteristicUuid))
 		return;
 	std::lock_guard<std::recursive_mutex> lock(connectionMutex_);
-	for (const auto& entry : connections_)
-		if (entry.id && entry.handle == info.getConnHandle() && entry.peer == info.getAddress() &&
-			IsCurrentConnectionLocked(entry.id, info.getConnHandle(), info.getAddress()))
-		{
-			auto* observation = FindGattObservationSlotLocked(entry.id, characteristicUuid);
-			if (observation)
-			{
-				observation->publicationStatusObserved = true;
-				observation->publicationStatusCode = status;
-				observation->publicationStatusObservedAtUptimeMs = millis();
-			}
-			return;
-		}
+	auto* observation = FindGattPublicationStatusSlotLocked(characteristicUuid);
+	if (!observation)
+		return;
+
+	observation->observed = true;
+	observation->statusCode = status;
+	observation->observedAtUptimeMs = millis();
+	auto* count = &observation->errorCount;
+	switch (gattPublicationStatusKind(status))
+	{
+		case GattPublicationStatusKind::NotificationTx: count = &observation->notificationTxCount; break;
+		case GattPublicationStatusKind::IndicationAcknowledged: count = &observation->indicationAcknowledgedCount; break;
+		case GattPublicationStatusKind::Error: break;
+	}
+	if (*count != UINT32_MAX)
+		++*count;
 }
 
 BluetoothManager::GattSubscriptionDiagnosticsSnapshot BluetoothManager::GetGattSubscriptionDiagnosticsSnapshot()
@@ -284,6 +308,7 @@ BluetoothManager::GattSubscriptionDiagnosticsSnapshot BluetoothManager::GetGattS
 	GattSubscriptionDiagnosticsSnapshot snapshot;
 	std::lock_guard<std::recursive_mutex> lock(connectionMutex_);
 	snapshot.observations.reserve(gattObservations_.size());
+	snapshot.publicationStatuses.reserve(gattPublicationStatuses_.size());
 	for (const auto& connection : connections_)
 		if (connection.id && ResolveConnection(connection.id))
 			++snapshot.currentConnectionCount;
@@ -305,16 +330,58 @@ BluetoothManager::GattSubscriptionDiagnosticsSnapshot BluetoothManager::GetGattS
 			observation.subscriptionObserved = stored.subscriptionObserved;
 			observation.cccdValue = stored.cccdValue;
 			observation.subscriptionObservedAtUptimeMs = stored.subscriptionObservedAtUptimeMs;
-			observation.publicationStatusObserved = stored.publicationStatusObserved;
-			observation.publicationStatusCode = stored.publicationStatusCode;
-			observation.publicationStatusKind = gattPublicationStatusKind(stored.publicationStatusCode);
-			observation.publicationStatusObservedAtUptimeMs = stored.publicationStatusObservedAtUptimeMs;
 			snapshot.observations.push_back(std::move(observation));
 			break;
 		}
 	}
+	for (size_t i = 0; i < gattPublicationStatuses_.size(); ++i)
+	{
+		const auto& stored = gattPublicationStatuses_[i];
+		if (!stored.observed)
+			continue;
+		GattPublicationStatusObservation observation;
+		observation.characteristicUuid = gattPublicationStatusCharacteristics[i];
+		observation.statusCode = stored.statusCode;
+		observation.statusKind = gattPublicationStatusKind(stored.statusCode);
+		observation.observedAtUptimeMs = stored.observedAtUptimeMs;
+		observation.notificationTxCount = stored.notificationTxCount;
+		observation.indicationAcknowledgedCount = stored.indicationAcknowledgedCount;
+		observation.errorCount = stored.errorCount;
+		snapshot.publicationStatuses.push_back(std::move(observation));
+	}
 	return snapshot;
 }
+
+size_t BluetoothManager::CountObservedSubscribedPeers(const GattSubscriptionDiagnosticsSnapshot& snapshot,
+	std::string_view characteristicUuid, uint16_t properties)
+{
+	if (!isGattSubscriptionCharacteristic(characteristicUuid))
+		return 0;
+	const uint16_t eligibleCccdBits = static_cast<uint16_t>(
+		((properties & NIMBLE_PROPERTY::NOTIFY) ? 0x0001 : 0) |
+		((properties & NIMBLE_PROPERTY::INDICATE) ? 0x0002 : 0));
+	if (!eligibleCccdBits)
+		return 0;
+
+	size_t count = 0;
+	for (size_t i = 0; i < snapshot.observations.size(); ++i)
+	{
+		const auto& observation = snapshot.observations[i];
+		if (observation.characteristicUuid != characteristicUuid || !observation.connectionId ||
+			!observation.subscriptionObserved || observation.cccdValue > 3 || !(observation.cccdValue & eligibleCccdBits))
+			continue;
+		const bool alreadyCounted = std::any_of(snapshot.observations.begin(), snapshot.observations.begin() + i,
+			[&](const auto& previous) {
+				return previous.connectionId == observation.connectionId &&
+					previous.characteristicUuid == characteristicUuid && previous.subscriptionObserved &&
+					previous.cccdValue <= 3 && (previous.cccdValue & eligibleCccdBits);
+			});
+		if (!alreadyCounted)
+			++count;
+	}
+	return count;
+}
+
 #endif
 
 std::optional<NimBLEConnInfo> BluetoothManager::ResolveConnection(ConnectionId id)

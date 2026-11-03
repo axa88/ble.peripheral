@@ -56,7 +56,8 @@ public:
 	};
 
 #if BLE_ENABLE_WEB_INTERFACE
-	static constexpr size_t MaxGattObservationEntries = CONFIG_BT_NIMBLE_MAX_CONNECTIONS * 3;
+	static constexpr size_t MaxGattObservationEntries = CONFIG_BT_NIMBLE_MAX_CONNECTIONS * 4;
+	static constexpr size_t MaxGattPublicationStatusEntries = 3;
 	enum class GattPublicationStatusKind { NotificationTx, IndicationAcknowledged, Error };
 	struct GattSubscriptionObservation
 	{
@@ -66,15 +67,22 @@ public:
 		bool subscriptionObserved = false;
 		uint16_t cccdValue = 0;
 		uint32_t subscriptionObservedAtUptimeMs = 0;
-		bool publicationStatusObserved = false;
-		int publicationStatusCode = 0;
-		GattPublicationStatusKind publicationStatusKind = GattPublicationStatusKind::Error;
-		uint32_t publicationStatusObservedAtUptimeMs = 0;
+	};
+	struct GattPublicationStatusObservation
+	{
+		std::string characteristicUuid;
+		int statusCode = 0;
+		GattPublicationStatusKind statusKind = GattPublicationStatusKind::Error;
+		uint32_t observedAtUptimeMs = 0;
+		uint32_t notificationTxCount = 0;
+		uint32_t indicationAcknowledgedCount = 0;
+		uint32_t errorCount = 0;
 	};
 	struct GattSubscriptionDiagnosticsSnapshot
 	{
 		size_t currentConnectionCount = 0;
 		std::vector<GattSubscriptionObservation> observations;
+		std::vector<GattPublicationStatusObservation> publicationStatuses;
 	};
 #endif
 
@@ -107,8 +115,10 @@ public:
 	bool TryGetConnectedPeerSnapshots(std::vector<ConnectedPeerSnapshot>& snapshots);
 #if BLE_ENABLE_WEB_INTERFACE
 	void RecordGattSubscription(const NimBLEConnInfo& info, std::string_view characteristicUuid, uint16_t cccdValue);
-	void RecordGattPublicationStatus(const NimBLEConnInfo& info, std::string_view characteristicUuid, int status);
+	void RecordGattPublicationStatus(std::string_view characteristicUuid, int status);
 	GattSubscriptionDiagnosticsSnapshot GetGattSubscriptionDiagnosticsSnapshot();
+	static size_t CountObservedSubscribedPeers(const GattSubscriptionDiagnosticsSnapshot& snapshot,
+		std::string_view characteristicUuid, uint16_t properties);
 #endif
 	bool ConnectionExists(ConnectionId connection);
 	static bool ValidConnectionParameters(uint32_t minIntervalMs, uint32_t maxIntervalMs, uint16_t latency, uint32_t supervisionTimeoutMs);
@@ -159,12 +169,20 @@ private:
 		bool subscriptionObserved = false;
 		uint16_t cccdValue = 0;
 		uint32_t subscriptionObservedAtUptimeMs = 0;
-		bool publicationStatusObserved = false;
-		int publicationStatusCode = 0;
-		uint32_t publicationStatusObservedAtUptimeMs = 0;
+	};
+	struct GattPublicationStatusSlot
+	{
+		bool observed = false;
+		int statusCode = 0;
+		uint32_t observedAtUptimeMs = 0;
+		uint32_t notificationTxCount = 0;
+		uint32_t indicationAcknowledgedCount = 0;
+		uint32_t errorCount = 0;
 	};
 	std::array<GattObservationSlot, MaxGattObservationEntries> gattObservations_{};
+	std::array<GattPublicationStatusSlot, MaxGattPublicationStatusEntries> gattPublicationStatuses_{};
 	GattObservationSlot* FindGattObservationSlotLocked(ConnectionId connection, std::string_view characteristicUuid);
+	GattPublicationStatusSlot* FindGattPublicationStatusSlotLocked(std::string_view characteristicUuid);
 	#endif
 	uint64_t bootId_ = 0;
 	uint32_t connectionSequence_ = 0;
